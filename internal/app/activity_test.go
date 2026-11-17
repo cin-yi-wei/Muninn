@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -47,13 +48,90 @@ func TestShortTool(t *testing.T) {
 	}
 }
 
-func TestRenderStepsKeepsLast(t *testing.T) {
-	var steps []string
-	for i := 0; i < 12; i++ {
-		steps = append(steps, "s")
+func TestPaginateBySteps(t *testing.T) {
+	steps := make([]string, 2*activityPageSteps+3)
+	for i := range steps {
+		steps[i] = "s"
 	}
-	if r := renderSteps("h", steps); !strings.Contains(r, "前面還有 4 步") || strings.Count(r, "• ") != activityMaxLines {
-		t.Fatal(r)
+	pages := paginate(steps)
+	if len(pages) != 3 || pages[0] != [2]int{0, activityPageSteps} || pages[2] != [2]int{2 * activityPageSteps, len(steps)} {
+		t.Fatalf("應每 %d 步一頁：%v", activityPageSteps, pages)
+	}
+	// 往後追加步驟不能改到前面已經滿的頁（前面的訊息已經凍結）
+	more := append(append([]string(nil), steps...), "x", "y")
+	if p2 := paginate(more); p2[0] != pages[0] || p2[1] != pages[1] {
+		t.Fatalf("追加步驟後前面的頁變了：%v → %v", pages, p2)
+	}
+}
+
+func TestPaginateByLength(t *testing.T) {
+	long := strings.Repeat("字", 400) // 10 步共 4000 字，必須依字數分頁
+	var steps []string
+	for i := 0; i < 10; i++ {
+		steps = append(steps, long)
+	}
+	pages := paginate(steps)
+	if len(pages) < 2 {
+		t.Fatalf("長步驟應依長度分頁：%v", pages)
+	}
+	for _, p := range pages {
+		if r := renderPage("⏳ **工作中**（步驟 999 起）", steps[p[0]:p[1]]); len([]rune(r)) > 2000 {
+			t.Fatalf("單則超過 Discord 2000 字：%d", len([]rune(r)))
+		}
+	}
+	if len(paginate(nil)) != 0 {
+		t.Fatal("沒有步驟不該有頁")
+	}
+}
+
+func TestActivityFeedRollsOver(t *testing.T) {
+	var tools []runner.Activity
+	n := activityPageSteps + 5
+	for i := 0; i < n; i++ {
+		tools = append(tools, tool("Bash", fmt.Sprintf(`{"command":"step-%02d"}`, i)))
+	}
+	snd, _ := runOne(t, toolAsker{gap: 20 * time.Millisecond, tools: tools}, true)
+	// latest：每則旁白訊息的最後版本（新發的內容，之後被編輯就取代）
+	latest := func() map[string]string {
+		m := map[string]string{}
+		for i, s := range snd.snapshot() {
+			if strings.Contains(s.text, "step-") {
+				m[fmt.Sprintf("msg%d", i)] = s.text
+			}
+		}
+		for _, e := range snd.editsSnapshot() {
+			id, text, _ := strings.Cut(e, ":")
+			m[id] = text
+		}
+		return m
+	}
+	done := fmt.Sprintf("✅ 完成，%d 個步驟", n)
+	waitFor(t, func() bool {
+		for _, v := range latest() {
+			if strings.Contains(v, done) {
+				return true
+			}
+		}
+		return false
+	})
+	last := latest()
+	if len(last) != 2 || last["msg0"] == "" || last["msg1"] == "" {
+		t.Fatalf("超過 %d 步應另開第二則（msg0、msg1），實際：%q", activityPageSteps, last)
+	}
+	all := last["msg0"] + "\n" + last["msg1"]
+	for i := 0; i < n; i++ {
+		if !strings.Contains(all, fmt.Sprintf("step-%02d", i)) {
+			t.Fatalf("第 %d 步不見了：%q", i, all)
+		}
+	}
+	if strings.Contains(all, "前面還有") {
+		t.Fatalf("不該再略過步驟：%q", all)
+	}
+	if !strings.Contains(last["msg0"], fmt.Sprintf("步驟 1–%d", activityPageSteps)) || strings.Contains(last["msg0"], "工作中") {
+		t.Fatalf("第一則應凍結成步驟範圍：%q", last["msg0"])
+	}
+	if !strings.Contains(last["msg1"], "✅ 完成") || !strings.Contains(last["msg1"], fmt.Sprintf("步驟 %d–%d", activityPageSteps+1, n)) {
+		t.Fatalf("最後一則應是總結並標出步驟範圍：%q", last["msg1"])
 	}
 }
 

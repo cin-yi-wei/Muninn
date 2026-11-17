@@ -11,13 +11,18 @@ import (
 	"muninn/internal/runner"
 )
 
-// 活動旁白（M5）：claude 跑一輪的過程中，頻道上維持一則「工作中」訊息，
+// 活動旁白（M5）：claude 跑一輪的過程中，頻道上維持「工作中」訊息，
 // 每用一個工具就更新一次（最多每 activityEvery 改一次，避免撞 Discord rate limit），
-// 跑完改成一行總結。整輪沒用任何工具（純聊天）就不會出現。
+// 跑完把最後一則改成總結。整輪沒用任何工具（純聊天）就不會出現。
+//
+// 步驟不略過：一則累積到 activityPageSteps 步或接近字數上限就凍結（標成「步驟 a–b」），
+// 往下另開一則接著寫，所以每一步都留在頻道上。
 
 const (
-	activityEvery    = 2 * time.Second
-	activityMaxLines = 8
+	activityEvery     = 2 * time.Second
+	activityPageSteps = 15
+	// activityPageChars：一則裡步驟文字的字元上限，留空間給標題，確保整則不超過 Discord 的 2000 字
+	activityPageChars = 1800
 )
 
 type activityFeed struct {
@@ -26,7 +31,8 @@ type activityFeed struct {
 
 	mu     sync.Mutex
 	steps  []string
-	msgID  string
+	msgIDs []string // 每一頁對應的訊息 id（依序）
+	sent   []string // 每一頁最後一次送出的內容，沒變就不重送
 	dirty  bool
 	closed bool
 	wake   chan struct{}
@@ -68,42 +74,59 @@ func (f *activityFeed) loop() {
 		if closed {
 			return
 		}
-		f.flush("⏳ **工作中**")
+		f.flush("")
 		last = time.Now()
 	}
 }
 
-// flush 把目前步驟送出（第一次新發訊息，之後改寫同一則）。
-func (f *activityFeed) flush(header string) {
+// flush 把目前步驟送出：已有訊息的頁內容有變才改寫，新的頁另開一則。
+// summary 非空時代表這輪結束，最後一頁的標題換成總結。
+// 只會在 loop goroutine 或 loop 結束後的 finish 裡呼叫，不會並行。
+func (f *activityFeed) flush(summary string) {
 	f.mu.Lock()
 	if !f.dirty || len(f.steps) == 0 {
 		f.mu.Unlock()
 		return
 	}
 	f.dirty = false
-	text := renderSteps(header, f.steps)
-	id := f.msgID
+	steps := append([]string(nil), f.steps...)
+	ids := append([]string(nil), f.msgIDs...)
+	sent := append([]string(nil), f.sent...)
 	f.mu.Unlock()
 
+	pages := paginate(steps)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if id == "" {
+	for i, p := range pages {
+		text := renderPage(pageHeader(i, len(pages), p, summary), steps[p[0]:p[1]])
+		if i < len(ids) {
+			if text == sent[i] {
+				continue
+			}
+			if err := f.a.Prompter.EditMessage(ctx, f.a.ChannelID, ids[i], text); err != nil {
+				f.a.logf("activity: 更新訊息失敗: %v", err)
+				continue
+			}
+			sent[i] = text
+			continue
+		}
 		newID, err := f.a.Prompter.SendPrompt(ctx, f.a.ChannelID, text, nil)
 		if err != nil {
 			f.a.logf("activity: 發訊息失敗: %v", err)
-			return
+			f.mu.Lock()
+			f.dirty = true // 下次叫醒時重試開新的一則
+			f.mu.Unlock()
+			break
 		}
-		f.mu.Lock()
-		f.msgID = newID
-		f.mu.Unlock()
-		return
+		ids = append(ids, newID)
+		sent = append(sent, text)
 	}
-	if err := f.a.Prompter.EditMessage(ctx, f.a.ChannelID, id, text); err != nil {
-		f.a.logf("activity: 更新訊息失敗: %v", err)
-	}
+	f.mu.Lock()
+	f.msgIDs, f.sent = ids, sent
+	f.mu.Unlock()
 }
 
-// finish 停止更新並把訊息改成總結；status 例如「完成」「已中斷」。
+// finish 停止更新並把最後一則改成總結；status 例如「✅ 完成」「⏹ 已中斷」。
 func (f *activityFeed) finish(status string) {
 	f.mu.Lock()
 	f.closed = true
@@ -118,15 +141,46 @@ func (f *activityFeed) finish(status string) {
 	f.flush(fmt.Sprintf("%s，%d 個步驟，耗時 %s", status, n, time.Since(f.start).Round(time.Second)))
 }
 
-func renderSteps(header string, steps []string) string {
+// paginate 把步驟由前往後貪婪分頁，回傳每頁的 [起, 迄) 索引。
+// 只往後追加步驟時，前面已經滿的頁不會變（那些訊息已凍結）。
+func paginate(steps []string) [][2]int {
+	var pages [][2]int
+	start, chars := 0, 0
+	for i, s := range steps {
+		l := len([]rune(s)) + 3 // 「\n• 」
+		if i > start && (i-start >= activityPageSteps || chars+l > activityPageChars) {
+			pages = append(pages, [2]int{start, i})
+			start, chars = i, 0
+		}
+		chars += l
+	}
+	if len(steps) > start {
+		pages = append(pages, [2]int{start, len(steps)})
+	}
+	return pages
+}
+
+// pageHeader：前面的頁凍結成「步驟 a–b」；最後一頁是「工作中」或總結，多頁時附上範圍。
+func pageHeader(i, total int, p [2]int, summary string) string {
+	rng := fmt.Sprintf("步驟 %d–%d", p[0]+1, p[1])
+	switch {
+	case i < total-1:
+		return "📜 " + rng
+	case summary != "" && total > 1:
+		return summary + "（" + rng + "）"
+	case summary != "":
+		return summary
+	case total > 1:
+		return fmt.Sprintf("⏳ **工作中**（步驟 %d 起）", p[0]+1)
+	default:
+		return "⏳ **工作中**"
+	}
+}
+
+func renderPage(header string, steps []string) string {
 	var b strings.Builder
 	b.WriteString(header)
-	shown := steps
-	if len(steps) > activityMaxLines {
-		fmt.Fprintf(&b, "\n…（前面還有 %d 步）", len(steps)-activityMaxLines)
-		shown = steps[len(steps)-activityMaxLines:]
-	}
-	for _, s := range shown {
+	for _, s := range steps {
 		b.WriteString("\n• " + s)
 	}
 	return b.String()
