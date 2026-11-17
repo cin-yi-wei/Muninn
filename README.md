@@ -153,7 +153,10 @@ claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出
 - 同一組 API 給外部系統用（`Authorization: Bearer <token>`）。端點清單見 `internal/web/web.go` 開頭註解。常用：
   - `POST /api/bindings/{name}/message {"text","source"}`：webhook 入口，把訊息送進那個頻道的 claude
   - `POST /api/tasks {"binding","task","role","level"}`：代某個頻道委派，結果回那個頻道
-- 預設只聽本機；要從外面連，前面加 TLS（反向代理或 tunnel）。
+- 預設只聽本機；要從外面連，前面加 TLS（反向代理或 tunnel）。這台機器用獨立的 Cloudflare Tunnel `muninn`
+  對外成 `https://muninn.example.com`（`~/.cloudflared/config-muninn.yml`，unit 見 `deploy/cloudflared-muninn.service`）。
+  ⚠️ `cloudflared tunnel route dns` 一定要帶 `--config <這個 tunnel 的設定>`，否則會讀到 `/etc/cloudflared/config.yml`
+  的 tunnel，把 DNS 指到別的 tunnel 去。
 
 **稽核 log**：`state_dir/audit.jsonl`（append-only，超過 10MB 輪替成 `.1`）記下權限決定（含誰按的）、頻道管理（cli／channel／web）、
 委派任務的開始與結束、外部 API 呼叫。網頁的「稽核 log」分頁可以看。
