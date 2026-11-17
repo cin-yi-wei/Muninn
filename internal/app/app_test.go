@@ -92,10 +92,10 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	waitFor(t, func() bool { return len(snd.snapshot()) == 2 })
 	out := snd.snapshot()
-	if out[0] != (sent{"c1", "回：第一則", "m1"}) {
+	if out[0] != (sent{"c1", "回：第一則", ""}) {
 		t.Fatalf("第一則回覆不對：%+v", out[0])
 	}
-	if out[1].replyTo != "m3" || !strings.HasPrefix(out[1].text, "⚠️") {
+	if out[1].replyTo != "" || !strings.HasPrefix(out[1].text, "⚠️") {
 		t.Fatalf("claude 失敗時應回錯誤訊息：%+v", out[1])
 	}
 	asker.mu.Lock()
@@ -146,5 +146,21 @@ func TestJobIDSortsByTime(t *testing.T) {
 	b := jobID("2026-11-17T07:00:01Z", "111")
 	if !(a < b) {
 		t.Fatalf("job id 應依時間排序：%s vs %s", a, b)
+	}
+}
+
+func TestQuoteReplyOptIn(t *testing.T) {
+	dir := t.TempDir()
+	snd := &fakeSender{}
+	a := newApp(t, dir, &fakeAsker{}, snd, nil)
+	a.QuoteReply = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.RunWorker(ctx)
+	go a.RunSender(ctx)
+	_ = a.OnMessage(ctx, discord.Message{ID: "m1", ChannelID: "c1", AuthorID: "u", Content: "hi", CreatedAt: "2026-11-17T07:00:00Z"})
+	waitFor(t, func() bool { return len(snd.snapshot()) == 1 })
+	if got := snd.snapshot()[0].replyTo; got != "m1" {
+		t.Fatalf("打開 QuoteReply 時應掛回覆引用，得到 %q", got)
 	}
 }

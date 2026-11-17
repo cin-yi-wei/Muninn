@@ -10,6 +10,7 @@
 //	MUNINN_ALLOW_ANYONE=1   不設白名單時必須明確打開，否則拒絕啟動
 //	MUNINN_MODEL            選填，claude --model
 //	MUNINN_CLAUDE_BIN       選填，claude 執行檔路徑
+//	MUNINN_QUOTE_REPLY=1    選填，回覆掛在原訊息底下（預設直接發一般訊息）
 //	MUNINN_CLAUDE_ARGS      選填，額外 flag（以空白分隔），例如 "--permission-mode acceptEdits"
 package main
 
@@ -75,6 +76,7 @@ func run() error {
 		StateDir:     stateDir,
 		ChannelID:    channel,
 		AllowedUsers: allowed,
+		QuoteReply:   os.Getenv("MUNINN_QUOTE_REPLY") == "1",
 		Asker:        r,
 		Sender:       &discord.REST{Token: token},
 	}

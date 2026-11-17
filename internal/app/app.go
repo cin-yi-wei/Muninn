@@ -55,6 +55,7 @@ type App struct {
 	StateDir     string
 	ChannelID    string
 	AllowedUsers map[string]bool // 空 = 不限制（需呼叫端明確允許）
+	QuoteReply   bool            // true：回覆掛在原訊息底下（Discord 回覆引用）；預設 false 直接發一般訊息
 	Asker        Asker
 	Sender       Sender
 	Logf         func(format string, args ...any)
@@ -144,7 +145,10 @@ func (a *App) RunWorker(ctx context.Context) error {
 		}
 		a.logf("worker: %s 完成，耗時 %s，apiKeySource=%q rateLimit=%q cost≈$%.4f（程序累計 $%.4f）",
 			id, time.Since(start).Round(time.Millisecond), rep.APIKeySource, rep.RateLimit, rep.CostUSD, rep.TotalCostUSD)
-		out := OutboxJob{ID: id, ChannelID: job.ChannelID, ReplyTo: job.MessageID, Text: text}
+		out := OutboxJob{ID: id, ChannelID: job.ChannelID, Text: text}
+		if a.QuoteReply {
+			out.ReplyTo = job.MessageID
+		}
 		if err := a.outbox.Put(out.ID, out); err != nil && !errors.Is(err, queue.ErrExists) {
 			return err
 		}
