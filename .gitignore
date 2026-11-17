@@ -1,0 +1,13 @@
+# 編譯產物
+/muninn
+/bin/
+*.exe
+
+# 本機狀態與密鑰
+/.env
+/state/
+/inbox/
+/outbox/
+
+# 編輯器雜物
+.DS_Store
