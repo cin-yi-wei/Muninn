@@ -50,11 +50,11 @@ func (a *App) newActivityFeed() *activityFeed {
 // add 由 runner 在 Ask 的 goroutine 裡同步呼叫，只記下來、叫醒 loop，不碰網路。
 func (f *activityFeed) add(act runner.Activity) {
 	f.mu.Lock()
-	step := shortTool(act.Tool, act.Input)
-	if wd := strings.TrimRight(f.a.Workdir, "/"); wd != "" {
-		step = strings.ReplaceAll(step, wd+"/", "")
+	bullet := "• "
+	if act.Parent != "" {
+		bullet = "  ↳ " // subagent 做的步驟縮排，跟主 agent 的分開
 	}
-	entry := "• " + step
+	entry := bullet + shortTool(act.Tool, act.Input, f.a.Workdir)
 	if blk := toolBlock(act.Tool, act.Input); blk != "" {
 		entry += "\n" + blk
 	}
@@ -316,8 +316,9 @@ func splitEntry(entry string, max int) []string {
 	return out
 }
 
-// shortTool 把工具呼叫壓成一行。
-func shortTool(tool string, input json.RawMessage) string {
+// shortTool 把工具呼叫壓成一行。workdir 非空時，裡面的工作目錄前綴換成相對路徑
+// （要在截斷之前換，否則長路徑的前綴被切掉就換不掉了）。
+func shortTool(tool string, input json.RawMessage, workdir string) string {
 	var m map[string]any
 	_ = json.Unmarshal(input, &m)
 	s := func(k string) string { v, _ := m[k].(string); return v }
@@ -350,6 +351,9 @@ func shortTool(tool string, input json.RawMessage) string {
 		}
 	}
 	detail = strings.Join(strings.Fields(detail), " ") // 壓掉換行
+	if wd := strings.TrimRight(workdir, "/"); wd != "" {
+		detail = strings.ReplaceAll(detail, wd+"/", "")
+	}
 	if r := []rune(detail); len(r) > 80 {
 		detail = string(r[:80]) + "…"
 	}

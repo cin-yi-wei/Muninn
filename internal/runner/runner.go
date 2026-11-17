@@ -72,6 +72,8 @@ type event struct {
 	IsReplay     bool              `json:"isReplay"` // --replay-user-messages 回放的 user 訊息
 	UUID         string            `json:"uuid"`
 	Tasks        []json.RawMessage `json:"tasks"` // system/background_tasks_changed：目前還在跑的背景任務
+	// ParentToolUseID：subagent 的事件會帶派它的 Agent／Task tool_use id，主 agent 的是 null
+	ParentToolUseID string `json:"parent_tool_use_id"`
 }
 
 type assistantMessage struct {
@@ -87,6 +89,8 @@ type assistantMessage struct {
 type Activity struct {
 	Tool  string
 	Input json.RawMessage
+	// Parent 非空表示這是 subagent 做的動作，值是派它的那個 Agent／Task tool_use 的 id
+	Parent string
 }
 
 type activityKey struct{}
@@ -409,6 +413,7 @@ func (r *Runner) dispatch(d *dispatcher, ev event) {
 }
 
 // assistantTexts 取出 assistant 事件裡的文字；report 不是 nil 時順便回報工具呼叫。
+// subagent 的文字（ParentToolUseID 非空）是它交給主 agent 的報告，不算進回覆。
 func assistantTexts(ev event, report func(Activity)) []string {
 	var am assistantMessage
 	if json.Unmarshal(ev.Message, &am) != nil {
@@ -416,11 +421,11 @@ func assistantTexts(ev event, report func(Activity)) []string {
 	}
 	var out []string
 	for _, c := range am.Content {
-		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
+		if c.Type == "text" && strings.TrimSpace(c.Text) != "" && ev.ParentToolUseID == "" {
 			out = append(out, c.Text)
 		}
 		if c.Type == "tool_use" && report != nil {
-			report(Activity{Tool: c.Name, Input: c.Input})
+			report(Activity{Tool: c.Name, Input: c.Input, Parent: ev.ParentToolUseID})
 		}
 	}
 	return out

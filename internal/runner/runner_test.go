@@ -271,6 +271,34 @@ done
 	}
 }
 
+// subagent 的事件頂層帶 parent_tool_use_id（指向派它的 Agent tool_use）：
+// 工具呼叫要帶上 Parent 回報，它的文字不能算進主回覆
+func TestSubagentEventsMarkedAndExcludedFromReply(t *testing.T) {
+	bin, dir := fakeClaude(t, `#!/bin/sh
+while IFS= read -r line; do
+  echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"description":"跑 echo"}}]}}'
+  echo '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"content":[{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"echo hi"}}]}}'
+  echo '{"type":"assistant","parent_tool_use_id":"toolu_A","message":{"content":[{"type":"text","text":"subagent 的報告"}]}}'
+  echo '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done"}]}}'
+  echo '{"type":"result","subtype":"success","result":""}'
+done
+`)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	var got []string
+	ctx := WithActivity(ctx5s(t), func(a Activity) { got = append(got, a.Tool+"@"+a.Parent) })
+	rep, err := r.Ask(ctx, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "Agent@" || got[1] != "Bash@toolu_A" {
+		t.Fatalf("工具呼叫應帶上 Parent：%q", got)
+	}
+	if rep.Text != "done" {
+		t.Fatalf("subagent 的文字不該算進主回覆：%q", rep.Text)
+	}
+}
+
 func TestExitIncludesStderrAndSilent(t *testing.T) {
 	bin, dir := fakeClaude(t, `#!/bin/sh
 echo "Invalid API key · Please run /login" >&2

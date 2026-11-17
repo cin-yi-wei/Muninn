@@ -39,12 +39,35 @@ func TestShortTool(t *testing.T) {
 		"`SomethingElse`":      tool("SomethingElse", `{}`),
 	}
 	for want, a := range cases {
-		if got := shortTool(a.Tool, a.Input); got != want {
+		if got := shortTool(a.Tool, a.Input, ""); got != want {
 			t.Errorf("得到 %q，預期 %q", got, want)
 		}
 	}
-	if got := shortTool("Bash", json.RawMessage(`{"command":"`+strings.Repeat("x", 200)+"`"+`"}`)); len([]rune(got)) > 100 || strings.Count(got, "`") != 2 {
+	if got := shortTool("Bash", json.RawMessage(`{"command":"`+strings.Repeat("x", 200)+"`"+`"}`), ""); len([]rune(got)) > 100 || strings.Count(got, "`") != 2 {
 		t.Errorf("長指令應截斷、反引號應替換：%q", got)
+	}
+}
+
+// 長的絕對路徑要先換成相對路徑再截斷，否則前綴被截掉就換不掉了
+func TestActivityAddLongPathRelative(t *testing.T) {
+	wd := "/home/someone/project/muninn/.claude/worktrees/agent-0123456789abcdef"
+	rel := "internal/queue/queue.go"
+	f := &activityFeed{a: &App{Workdir: wd}, wake: make(chan struct{}, 1)}
+	f.add(tool("Read", `{"file_path":"`+wd+"/"+rel+`"}`))
+	if len(f.steps) != 1 || f.steps[0] != "• `Read` "+rel {
+		t.Fatalf("應顯示完整的相對路徑：%q", f.steps)
+	}
+}
+
+// subagent 做的步驟（Parent 非空）要縮排標示，跟主 agent 的步驟分得出來
+func TestActivityAddMarksSubagentSteps(t *testing.T) {
+	f := &activityFeed{a: &App{}, wake: make(chan struct{}, 1)}
+	f.add(tool("Agent", `{"description":"跑 echo"}`))
+	sub := tool("Bash", `{"command":"echo hi"}`)
+	sub.Parent = "toolu_A"
+	f.add(sub)
+	if len(f.steps) != 2 || f.steps[0] != "• `Agent` 跑 echo" || f.steps[1] != "  ↳ `Bash` echo hi" {
+		t.Fatalf("subagent 的步驟應縮排標示：%q", f.steps)
 	}
 }
 
