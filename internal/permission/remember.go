@@ -23,8 +23,13 @@ import (
 var subcommandTools = map[string]bool{
 	"git": true, "go": true, "npm": true, "pnpm": true, "yarn": true, "cargo": true, "docker": true,
 	"kubectl": true, "gh": true, "pip": true, "pip3": true, "bundle": true, "rails": true, "make": true,
-	"systemctl": true, "apt": true, "apt-get": true, "brew": true, "rtk": true,
+	"systemctl": true, "apt": true, "apt-get": true, "brew": true,
 }
+
+// 這些是包裝指令，本身不算分類，要跳過看底下真正的指令。
+// rtk：使用者全域掛了 rtk hook，claude 的 `git status` 會被改寫成 `rtk git status` 才送來確認，
+// 不跳過的話會記成 `bash:rtk git`，變成連 git push 都一起放行。
+var wrappers = map[string]bool{"env": true, "time": true, "nice": true, "nohup": true, "rtk": true}
 
 var segmentSplit = regexp.MustCompile(`&&|\|\||;|\||\n`)
 
@@ -64,8 +69,12 @@ func Keys(tool string, input json.RawMessage) []string {
 func segmentKey(seg string) string {
 	f := strings.Fields(seg)
 	i := 0
-	for i < len(f) && (strings.Contains(f[i], "=") && !strings.HasPrefix(f[i], "-") || f[i] == "env" || f[i] == "time" || f[i] == "(" || f[i] == "{") {
+	for i < len(f) && (strings.Contains(f[i], "=") && !strings.HasPrefix(f[i], "-") || wrappers[filepath.Base(f[i])] || f[i] == "(" || f[i] == "{") {
 		i++
+		// rtk proxy <cmd> 也是包裝
+		if i < len(f) && f[i-1] == "rtk" && f[i] == "proxy" {
+			i++
+		}
 	}
 	if i >= len(f) {
 		return ""

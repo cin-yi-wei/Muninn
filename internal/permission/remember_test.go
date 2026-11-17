@@ -20,6 +20,10 @@ func TestKeys(t *testing.T) {
 		"sudo apt install x":                  {"bash:sudo"},
 		"/usr/bin/python3 -I x.py; echo done": {"bash:echo", "bash:python3"},
 		"git -C /repo log":                    {"bash:git"},
+		"rtk git status":                      {"bash:git status"},
+		"rtk git push origin main":            {"bash:git push"},
+		"rtk proxy go test ./...":             {"bash:go test"},
+		"rtk ls -l && rtk git diff":           {"bash:git diff", "bash:ls"},
 	}
 	for cmd, want := range cases {
 		if got := Keys("Bash", bashIn(cmd)); !reflect.DeepEqual(got, want) {
