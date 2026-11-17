@@ -67,6 +67,24 @@ token 放在 `telegram_token_env` 指定的環境變數（預設 `TELEGRAM_BOT_T
 - claude 要把檔案給使用者時用 `send_file` 工具（Discord 上限 8MB；Telegram 50MB，圖片直接顯示）。
 - Telegram 的輪詢位置存在 `state_dir/telegram_offset`，重啟不會重收已處理過的訊息。
 
+## 頻道管理（不用重啟）
+
+設定檔有變動時，正在跑的 Muninn 會在 3 秒內自動套用：新增的頻道啟動、移除或暫停的停掉、設定改了的重啟，
+其他頻道照跑不受影響（`state_dir`、token 環境變數名稱的變動才需要重啟）。設定寫錯時維持原本的設定並記 log。
+
+三種管理方式，都是改同一份設定檔（改之前留 `.bak`）：
+
+- **CLI**：`muninn list`、`muninn bind <名稱> --repo R [--branch B] [--channel ID | --create-channel | --telegram ID]`、
+  `muninn unbind <名稱> [--delete-channel] [--keep-worktree]`、`muninn pause|resume <名稱>`、`muninn set <名稱> 欄位=值`
+- **控制頻道**（binding 設 `"control": true`）：`!list`、`!bind <名稱> <repo> [分支]`、`!unbind`、`!pause <名稱>`、`!resume <名稱>`、`!set`，
+  或直接用講的：控制頻道的 claude 多一組 `binding_*` 工具
+- **任何頻道**：`!pause` 暫停自己；暫停中只認 `!resume`
+
+- `bind` 給分支會建 worktree（預設放 `worktree_root`，即 `<state_dir>/worktrees/<名稱>`）；Discord 不給頻道 id 時，
+  在設定的 `discord_guild`／`discord_category` 底下自動建同名頻道。中途失敗會收掉已建的東西。
+- `unbind` 會等那個頻道的 claude 停掉，worktree 有未提交的改動先在分支上做 wip commit 再移除（分支保留），
+  狀態目錄（含 session id）封存到 `<state_dir>/archive/`。
+
 ## 頻道裡的 Muninn 指令（M4）
 
 `!` 開頭、白名單內的人才能下，立刻執行、不交給 claude、不用等目前這一輪跑完：

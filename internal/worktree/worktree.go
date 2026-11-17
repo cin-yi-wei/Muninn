@@ -91,3 +91,38 @@ func samePath(a, b string) bool {
 	}
 	return ra == rb
 }
+
+// Remove 移除 worktree：有未提交的改動時先做一個 wip commit（不丟工作），再 git worktree remove。
+// 分支保留。回傳 wip commit 的 hash（沒有改動時為空）。
+func Remove(repo, path string) (wip string, err error) {
+	if path == "" {
+		return "", fmt.Errorf("worktree: 沒有 worktree 可移除（binding 直接在 repo 工作）")
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		_, _ = git(repo, "worktree", "prune")
+		return "", nil // 已經不在了
+	}
+	if !sameRepo(repo, path) {
+		return "", fmt.Errorf("worktree: %s 不屬於 repo %s，不動它", path, repo)
+	}
+	status, err := git(path, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	if status != "" {
+		if _, err := git(path, "add", "-A"); err != nil {
+			return "", err
+		}
+		if _, err := git(path, "-c", "user.name=muninn", "-c", "user.email=muninn@localhost",
+			"commit", "-q", "--no-verify", "-m", "wip: Muninn unbind 前保留未提交的工作"); err != nil {
+			return "", err
+		}
+		if wip, err = git(path, "rev-parse", "--short", "HEAD"); err != nil {
+			return "", err
+		}
+	}
+	if _, err := git(repo, "worktree", "remove", "--force", path); err != nil {
+		return wip, err
+	}
+	return wip, nil
+}

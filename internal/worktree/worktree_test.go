@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -73,5 +74,33 @@ func TestEnsureInPlaceRepo(t *testing.T) {
 	}
 	if _, err := Ensure(repo, "other", "", ""); err == nil {
 		t.Fatal("直接在 repo 工作但分支不對應拒絕")
+	}
+}
+
+func TestRemoveKeepsWorkAsWipCommit(t *testing.T) {
+	repo := newRepo(t)
+	wt := filepath.Join(t.TempDir(), "w")
+	if _, err := Ensure(repo, "feat", "main", wt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "x.txt"), []byte("work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wip, err := Remove(repo, wt)
+	if err != nil || wip == "" {
+		t.Fatalf("有改動應先 wip commit：%q %v", wip, err)
+	}
+	if _, err := os.Stat(wt); err == nil {
+		t.Fatal("worktree 應已移除")
+	}
+	if out, _ := git(repo, "show", "feat:x.txt"); out != "work" {
+		t.Fatalf("分支上應保留工作：%q", out)
+	}
+	if wip, err := Remove(repo, wt); err != nil || wip != "" {
+		t.Fatal("已不存在時應直接成功")
+	}
+	other := newRepo(t)
+	if _, err := Remove(repo, other); err == nil {
+		t.Fatal("別的 repo 不該動")
 	}
 }

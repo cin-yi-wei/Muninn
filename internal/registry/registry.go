@@ -32,8 +32,13 @@ type Config struct {
 	// MaxAttempts：同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
 	MaxAttempts int `json:"max_attempts"`
 	// Timezone：定時任務的預設時區（IANA 名稱），空字串用機器時區
-	Timezone string    `json:"timezone"`
-	Bindings []Binding `json:"bindings"`
+	Timezone string `json:"timezone"`
+	// DiscordGuild / DiscordCategory：bind 時自動建 Discord 頻道用（建在哪個伺服器、哪個分類底下）
+	DiscordGuild    string `json:"discord_guild"`
+	DiscordCategory string `json:"discord_category"`
+	// WorktreeRoot：bind 沒指定 worktree 時放在這底下（<root>/<name>），預設 <state_dir>/worktrees
+	WorktreeRoot string    `json:"worktree_root"`
+	Bindings     []Binding `json:"bindings"`
 }
 
 // Binding 是一個頻道的綁定。
@@ -53,6 +58,7 @@ type Binding struct {
 	AutoApprove  bool     `json:"auto_approve"` // true：claude 的權限請求直接放行，不貼頻道確認
 	Platform     string   `json:"platform"`     // discord（預設）或 telegram；channel_id 是 Discord 頻道 id 或 Telegram chat id
 	Activity     *bool    `json:"activity"`     // claude 跑的時候在頻道顯示正在做什麼，預設 true
+	Control      bool     `json:"control"`      // true：控制頻道，claude 多一組管理所有 binding 的工具
 }
 
 // 支援的平台。
@@ -144,6 +150,10 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("registry: permission_timeout %q 不是合法的時間長度", c.PermissionTimeout)
 	}
 	c.StateDir = expand(c.StateDir)
+	if c.WorktreeRoot == "" {
+		c.WorktreeRoot = filepath.Join(c.StateDir, "worktrees")
+	}
+	c.WorktreeRoot = expand(c.WorktreeRoot)
 	if c.Timezone != "" {
 		if _, err := time.LoadLocation(c.Timezone); err != nil {
 			return Config{}, fmt.Errorf("registry: timezone %q 不合法", c.Timezone)

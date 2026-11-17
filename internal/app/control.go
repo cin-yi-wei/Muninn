@@ -22,6 +22,7 @@ const helpText = "**Muninn 指令**（不會交給 claude）\n" +
 	"`!cancel`：中斷 claude 正在跑的這一輪（session 保留）\n" +
 	"`!restart`：中斷並重啟 claude 程序（session 保留，下一則訊息會 --resume）\n" +
 	"`!schedules`：列出這個頻道的定時任務（要新增、修改直接跟 claude 說）\n" +
+	"`!pause`：暫停這個頻道（claude 停掉，worktree 與對話保留；之後打 `!resume` 恢復）\n" +
 	"`!help`：這份說明"
 
 // handleCommand 處理 ! 開頭的 Muninn 指令；回傳 true 表示已處理、不進 inbox。
@@ -35,9 +36,32 @@ func (a *App) handleCommand(content string) bool {
 	if !strings.HasPrefix(cmd, "!") {
 		return false
 	}
+	// 控制頻道的管理指令帶參數，用原文切（名稱、路徑大小寫要保留）
+	fields := strings.Fields(strings.TrimSpace(content))
+	if len(fields) > 0 {
+		head := strings.ToLower(fields[0])
+		if strings.HasPrefix(head, "/") {
+			head = "!" + strings.SplitN(head[1:], "@", 2)[0]
+		}
+		if len(fields) > 1 && a.handleAdminCommand(head, fields[1:]) {
+			return true
+		}
+		if head == "!list" && a.handleAdminCommand(head, nil) {
+			return true
+		}
+	}
+	if strings.ContainsAny(cmd, " \n") {
+		return false // 帶參數的不是單頻道指令，交給 claude
+	}
 	switch cmd {
+	case "!pause":
+		a.selfPause()
 	case "!help", "!start": // /start 是 Telegram 第一次打開 bot 時自動送的
-		go a.notify(helpText)
+		if a.Admin != nil {
+			go a.notify(helpText + "\n\n" + controlHelp)
+		} else {
+			go a.notify(helpText)
+		}
 	case "!schedules":
 		if a.Schedules == nil {
 			go a.notify("這個頻道沒有啟用定時任務")

@@ -97,3 +97,21 @@ func TestExists(t *testing.T) {
 		t.Fatal("Exists 判斷錯誤")
 	}
 }
+
+func TestRunningMarker(t *testing.T) {
+	dir := t.TempDir()
+	if Running(dir) {
+		t.Fatal("沒標記不該算在跑")
+	}
+	if err := MarkRunning(dir); err != nil || !Running(dir) {
+		t.Fatal("標記後應算在跑")
+	}
+	ClearRunning(dir)
+	if Running(dir) {
+		t.Fatal("清掉後不該算在跑")
+	}
+	_ = os.WriteFile(filepath.Join(dir, "running"), []byte("999999999\n"), 0o644) // 不存在的 pid（崩潰殘留）
+	if Running(dir) {
+		t.Fatal("殘留標記的 pid 已不在，不該算在跑")
+	}
+}

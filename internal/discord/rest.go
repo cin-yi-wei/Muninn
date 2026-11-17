@@ -257,3 +257,31 @@ func (r *REST) SendFile(ctx context.Context, channelID, name string, data []byte
 		return fmt.Errorf("discord: 上傳檔案回 %d: %s", resp.StatusCode, respBody)
 	}
 }
+
+// CreateChannel 在伺服器裡建一個文字頻道（parentID 是分類，可空），回傳頻道 id。
+func (r *REST) CreateChannel(ctx context.Context, guildID, name, parentID, topic string) (string, error) {
+	body := map[string]any{"name": name, "type": 0}
+	if parentID != "" {
+		body["parent_id"] = parentID
+	}
+	if topic != "" {
+		body["topic"] = topic
+	}
+	resp, err := r.do(ctx, http.MethodPost, "/guilds/"+guildID+"/channels", body)
+	if err != nil {
+		return "", err
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resp, &ch); err != nil || ch.ID == "" {
+		return "", fmt.Errorf("discord: 建頻道的回應沒有 id")
+	}
+	return ch.ID, nil
+}
+
+// DeleteChannel 刪除頻道。
+func (r *REST) DeleteChannel(ctx context.Context, channelID string) error {
+	_, err := r.do(ctx, http.MethodDelete, "/channels/"+channelID, nil)
+	return err
+}

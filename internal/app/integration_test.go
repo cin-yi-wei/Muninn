@@ -47,8 +47,8 @@ func TestIntegrationClaudeCreatesSchedule(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	r := runner.New(runner.Config{Workdir: tmp, SessionID: session.NewUUID(), Model: "claude-haiku-5-5",
-		ExtraArgs: []string{"--mcp-config", permission.MCPConfig(exe, socket, "it"), "--permission-prompt-tool", permission.PromptTool,
-			"--append-system-prompt", permission.SystemPrompt, "--disallowedTools", "CronCreate,CronDelete,CronList"}})
+		ExtraArgs: []string{"--mcp-config", permission.MCPConfig(exe, socket, "it", false), "--permission-prompt-tool", permission.PromptTool,
+			"--append-system-prompt", permission.SystemPromptFor(false), "--disallowedTools", "CronCreate,CronDelete,CronList"}})
 	defer r.Close(context.Background())
 	rep, err := r.Ask(ctx, "幫我在這個頻道設一個定時任務：每週一到週五早上 9 點，提醒我看昨天的 CI 結果。任務名稱用 am-ci。直接建立，不用再問我。")
 	if err != nil {

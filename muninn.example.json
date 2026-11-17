@@ -9,6 +9,8 @@
   "memory_limit_mb": 2048,
   "max_attempts": 3,
   "timezone": "Asia/Taipei",
+  "discord_guild": "<Discord 伺服器 id，自動建頻道用>",
+  "discord_category": "<分類 id，選填>",
   "bindings": [
     {
       "name": "muninn-main",

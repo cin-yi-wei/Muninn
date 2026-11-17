@@ -16,7 +16,7 @@ func mcpSession(t *testing.T, socket string) (call func(string) map[string]any) 
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
-	go func() { _ = ServeMCP(context.Background(), inR, outW, socket, "bind-1") }()
+	go func() { _ = ServeMCP(context.Background(), inR, outW, socket, "bind-1", false) }()
 	t.Cleanup(func() { inW.Close() })
 	rd := bufio.NewReader(outR)
 	return func(line string) map[string]any {
@@ -144,7 +144,7 @@ func TestMCPConfigShape(t *testing.T) {
 			Args    []string `json:"args"`
 		} `json:"mcpServers"`
 	}
-	if err := json.Unmarshal([]byte(MCPConfig("/bin/muninn", "/s.sock", "b1")), &m); err != nil {
+	if err := json.Unmarshal([]byte(MCPConfig("/bin/muninn", "/s.sock", "b1", false)), &m); err != nil {
 		t.Fatal(err)
 	}
 	s := m.MCPServers[ServerName]

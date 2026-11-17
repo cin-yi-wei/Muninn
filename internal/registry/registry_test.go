@@ -84,3 +84,38 @@ func TestPlatform(t *testing.T) {
 		t.Fatal("不支援的平台應報錯")
 	}
 }
+
+func TestEditKeepsRawAndValidates(t *testing.T) {
+	p := write(t, `{"allowed_users":["u"],"memory_limit_mb":0,"bindings":[{"name":"a","channel_id":"1","repo":"~/r"}]}`)
+	err := Edit(p, func(bs []RawBinding) ([]RawBinding, error) {
+		bs[FindRaw(bs, "a")]["paused"] = true
+		return append(bs, RawBinding{"name": "b", "channel_id": "2", "repo": "/r"}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(p)
+	s := string(data)
+	if !strings.Contains(s, `"repo": "~/r"`) || !strings.Contains(s, `"memory_limit_mb": 0`) || strings.Contains(s, "state_dir") {
+		t.Fatalf("應保留原始寫法、不灌預設值：%s", s)
+	}
+	c, _ := Load(p)
+	if a, _ := c.Find("a"); !a.Paused {
+		t.Fatal("paused 沒寫進去")
+	}
+	if _, ok := c.Find("b"); !ok {
+		t.Fatal("新 binding 沒寫進去")
+	}
+	if _, err := os.Stat(p + ".bak"); err != nil {
+		t.Fatal("應留備份")
+	}
+	// 驗證不過就不寫
+	before, _ := os.ReadFile(p)
+	err = Edit(p, func(bs []RawBinding) ([]RawBinding, error) {
+		return append(bs, RawBinding{"name": "a", "channel_id": "3", "repo": "/r"}), nil
+	})
+	after, _ := os.ReadFile(p)
+	if err == nil || string(before) != string(after) {
+		t.Fatalf("重名應拒絕且不改檔：%v", err)
+	}
+}

@@ -45,7 +45,7 @@ func TestIntegrationPermissionPromptTool(t *testing.T) {
 		work := filepath.Join(tmp, "work")
 		_ = os.MkdirAll(work, 0o755)
 		cmd := exec.CommandContext(ctx, "claude", "-p", "--model", "claude-haiku-5-5",
-			"--mcp-config", MCPConfig(exe, socket, "it"),
+			"--mcp-config", MCPConfig(exe, socket, "it", false),
 			"--permission-prompt-tool", PromptTool, prompt)
 		cmd.Dir = work
 		cmd.Stdin = strings.NewReader("")

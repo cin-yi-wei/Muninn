@@ -131,3 +131,66 @@ const SystemPrompt = `你現在由 Muninn 驅動，對應一個聊天頻道：�
 使用者傳來的附件會下載到本機，訊息裡會附上路徑。要把檔案給使用者，用 mcp__muninn__send_file。
 定時任務、提醒、排程一律使用 Muninn 提供的 MCP 工具 mcp__muninn__schedule_add / schedule_list / schedule_remove / schedule_pause / schedule_run_now，它們只作用在這個頻道。
 不要用其他任何排程機制（系統 crontab、at、其他工具的 CLI、全域 skill 介紹的排程方式、內建的 Cron 工具等）來做這件事，就算其他說明這樣教也一樣。`
+
+// ControlTools 是控制頻道才有的工具：管理所有 binding（頻道）。
+var ControlTools = []map[string]any{
+	{
+		"name":        "binding_list",
+		"description": "列出所有 binding（頻道 ↔ repo/分支）與狀態（暫停、控制頻道、自動放行）。",
+		"inputSchema": obj(map[string]any{}),
+	},
+	{
+		"name": "binding_add",
+		"description": "新增一個 binding：一個頻道綁一個 repo（與分支）。給 branch 會自動建 git worktree；" +
+			"Discord 不給 channel_id 時自動建一個同名新頻道。Telegram 一定要給 chat id。新增後 Muninn 會自動啟動它，不用重啟。",
+		"inputSchema": obj(map[string]any{
+			"name":         str("名稱：小寫英數字與 -（也是新 Discord 頻道的名稱）"),
+			"repo":         str("主 repo 的路徑"),
+			"branch":       str("要工作的分支；不給就直接在 repo 工作（不建 worktree）"),
+			"base":         str("分支不存在時從哪裡開，預設 HEAD"),
+			"platform":     str("discord（預設）或 telegram"),
+			"channel_id":   str("已存在的頻道 id／Telegram chat id；Discord 不給就自動建新頻道"),
+			"auto_approve": boolean("權限請求直接放行，預設 false"),
+			"model":        str("指定 claude 模型，選填"),
+		}, "name", "repo"),
+	},
+	{
+		"name":        "binding_remove",
+		"description": "移除 binding：停掉它的 claude、worktree 有未提交的改動先 wip commit 再移除（分支保留）、狀態封存。",
+		"inputSchema": obj(map[string]any{
+			"name":           str("名稱"),
+			"delete_channel": boolean("Discord：連頻道一起刪，預設 false"),
+			"keep_worktree":  boolean("保留 worktree 不移除，預設 false"),
+		}, "name"),
+	},
+	{
+		"name":        "binding_pause",
+		"description": "暫停或恢復一個 binding（暫停會停掉 claude，worktree 與對話保留）。",
+		"inputSchema": obj(map[string]any{"name": str("名稱"), "paused": boolean("true 暫停、false 恢復")}, "name", "paused"),
+	},
+	{
+		"name":        "binding_set",
+		"description": "調整一個 binding 的設定：auto_approve、activity、quote_reply、control（true/false），model（字串，空字串＝預設）。",
+		"inputSchema": obj(map[string]any{"name": str("名稱"), "key": str("欄位"), "value": str("值")}, "name", "key", "value"),
+	},
+}
+
+// IsControlTool 回報 name 是否為控制頻道工具。
+func IsControlTool(name string) bool {
+	for _, t := range ControlTools {
+		if t["name"] == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SystemPromptFor 回傳附加的 system prompt；控制頻道多一段說明。
+func SystemPromptFor(control bool) string {
+	if !control {
+		return SystemPrompt
+	}
+	return SystemPrompt + `
+這個頻道是 Muninn 的**控制頻道**：你多了一組 mcp__muninn__binding_* 工具，可以管理所有頻道（新增、移除、暫停、恢復、調整設定、列出）。
+使用者要開新專案頻道、收掉頻道、暫停某個頻道時，用這些工具處理；動手前先跟使用者確認名稱、repo、分支。改動會立刻生效，不需要重啟 Muninn。`
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -177,4 +178,38 @@ func ClearHandoff(stateDir string) error {
 		return nil
 	}
 	return err
+}
+
+// 執行中標記：Muninn 啟動一個 binding 時寫入 <stateDir>/running（內容是 Muninn 的 pid），停掉時刪除。
+// unbind 用它等 claude 真的停了再移 worktree。Muninn 崩潰留下的舊標記，用 pid 是否還活著判斷。
+
+func runningPath(stateDir string) string { return filepath.Join(stateDir, "running") }
+
+// MarkRunning 寫入執行中標記。
+func MarkRunning(stateDir string) error {
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return err
+	}
+	return writeAtomic(runningPath(stateDir), []byte(fmt.Sprintf("%d\n", os.Getpid())))
+}
+
+// ClearRunning 刪除執行中標記。
+func ClearRunning(stateDir string) { _ = os.Remove(runningPath(stateDir)) }
+
+// Running 回報 binding 是否還在跑。
+func Running(stateDir string) bool {
+	b, err := os.ReadFile(runningPath(stateDir))
+	if err != nil {
+		return false
+	}
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(b)), "%d", &pid); err != nil || pid <= 0 {
+		return false
+	}
+	// signal 0 只檢查程序存在
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }

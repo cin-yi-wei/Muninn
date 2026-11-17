@@ -55,12 +55,14 @@ func Allow(input json.RawMessage) Decision {
 func Deny(msg string) Decision { return Decision{Behavior: "deny", Message: msg} }
 
 // MCPConfig 產生給 claude --mcp-config 的 JSON 字串，讓 claude 把我們的子程序掛成 MCP server。
-func MCPConfig(exe, socket, binding string) string {
+// control 為 true 時多掛一組管理所有 binding 的工具（控制頻道用）。
+func MCPConfig(exe, socket, binding string, control bool) string {
+	args := []string{"permission-mcp", "--socket", socket, "--binding", binding}
+	if control {
+		args = append(args, "--control")
+	}
 	cfg := map[string]any{"mcpServers": map[string]any{
-		ServerName: map[string]any{
-			"command": exe,
-			"args":    []string{"permission-mcp", "--socket", socket, "--binding", binding},
-		},
+		ServerName: map[string]any{"command": exe, "args": args},
 	}}
 	b, _ := json.Marshal(cfg)
 	return string(b)
@@ -162,7 +164,7 @@ type rpcMsg struct {
 }
 
 // ServeMCP 在 in/out 上講 MCP（newline-delimited JSON-RPC），把 tools/call 轉給 socket 上的 Broker。
-func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding string) error {
+func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding string, control bool) error {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
 	enc := json.NewEncoder(out)
@@ -203,6 +205,11 @@ func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding 
 			for _, t := range Tools {
 				tools = append(tools, t)
 			}
+			if control {
+				for _, t := range ControlTools {
+					tools = append(tools, t)
+				}
+			}
 			err = reply(m.ID, map[string]any{"tools": tools})
 		case "tools/call":
 			var p struct {
@@ -210,7 +217,7 @@ func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding 
 				Arguments json.RawMessage `json:"arguments"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
-			if IsChannelTool(p.Name) {
+			if IsChannelTool(p.Name) || (control && IsControlTool(p.Name)) {
 				res := callTool(ctx, socket, binding, p.Name, p.Arguments)
 				err = reply(m.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": res.Text}}, "isError": res.IsError})
 				break
