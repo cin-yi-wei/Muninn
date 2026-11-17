@@ -53,13 +53,17 @@ type App struct {
 	ChannelID    string
 	AllowedUsers map[string]bool // 空 = 不限制（需呼叫端明確允許）
 	QuoteReply   bool            // true：回覆掛在原訊息底下（Discord 回覆引用）；預設 false 直接發一般訊息
-	Asker        Asker
-	Sender       Sender
-	Logf         func(format string, args ...any)
+	AutoApprove  bool            // true：權限請求直接放行，不貼頻道
+	// PermissionTimeout 是等使用者回 y/n 的上限，預設 30 分鐘
+	PermissionTimeout time.Duration
+	Asker             Asker
+	Sender            Sender
+	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir
 	wakeWorker    chan struct{}
 	wakeSender    chan struct{}
+	perm          permState
 }
 
 func (a *App) logf(format string, args ...any) {
@@ -102,6 +106,10 @@ func jobID(createdAt, messageID string) string {
 func (a *App) OnMessage(_ context.Context, m discord.Message) error {
 	if len(a.AllowedUsers) > 0 && !a.AllowedUsers[m.AuthorID] {
 		a.logf("inbox: 略過非白名單作者 %s 的訊息 %s", m.AuthorID, m.ID)
+		return nil
+	}
+	// 有權限確認在等、而且這則是 y/n：拿去回確認，不進 inbox
+	if a.handlePermReply(m.Content) {
 		return nil
 	}
 	job := InboxJob{

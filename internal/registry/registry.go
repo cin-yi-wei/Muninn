@@ -10,15 +10,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Config 是整份設定檔。
 type Config struct {
-	StateDir     string    `json:"state_dir"`     // 各 binding 的佇列與 session 狀態放這底下，預設 ~/.local/state/muninn
-	TokenEnv     string    `json:"token_env"`     // bot token 的環境變數名稱，預設 DISCORD_BOT_TOKEN
-	AllowedUsers []string  `json:"allowed_users"` // 預設白名單，binding 沒寫時套用
-	ClaudeBin    string    `json:"claude_bin"`    // 選填
-	Bindings     []Binding `json:"bindings"`
+	StateDir     string   `json:"state_dir"`     // 各 binding 的佇列與 session 狀態放這底下，預設 ~/.local/state/muninn
+	TokenEnv     string   `json:"token_env"`     // bot token 的環境變數名稱，預設 DISCORD_BOT_TOKEN
+	AllowedUsers []string `json:"allowed_users"` // 預設白名單，binding 沒寫時套用
+	ClaudeBin    string   `json:"claude_bin"`    // 選填
+	// PermissionTimeout 是等使用者回 y/n 的上限（Go duration 字串），預設 30m
+	PermissionTimeout string    `json:"permission_timeout"`
+	Bindings          []Binding `json:"bindings"`
 }
 
 // Binding 是一個頻道的綁定。
@@ -34,7 +37,8 @@ type Binding struct {
 	Model        string   `json:"model"`
 	ClaudeArgs   []string `json:"claude_args"`
 	QuoteReply   bool     `json:"quote_reply"`
-	Paused       bool     `json:"paused"` // true：不收這個頻道的訊息
+	Paused       bool     `json:"paused"`       // true：不收這個頻道的訊息
+	AutoApprove  bool     `json:"auto_approve"` // true：claude 的權限請求直接放行，不貼頻道確認
 }
 
 // Workdir 回傳 claude 實際的工作目錄。
@@ -85,6 +89,12 @@ func Load(path string) (Config, error) {
 	if c.TokenEnv == "" {
 		c.TokenEnv = "DISCORD_BOT_TOKEN"
 	}
+	if c.PermissionTimeout == "" {
+		c.PermissionTimeout = "30m"
+	}
+	if d, err := time.ParseDuration(c.PermissionTimeout); err != nil || d <= 0 {
+		return Config{}, fmt.Errorf("registry: permission_timeout %q 不是合法的時間長度", c.PermissionTimeout)
+	}
 	c.StateDir = expand(c.StateDir)
 	c.ClaudeBin = expand(c.ClaudeBin)
 
@@ -112,6 +122,12 @@ func Load(path string) (Config, error) {
 		names[b.Name], channels[b.ChannelID] = true, true
 	}
 	return c, nil
+}
+
+// PermTimeout 回傳解析後的 permission_timeout（Load 已驗證過）。
+func (c Config) PermTimeout() time.Duration {
+	d, _ := time.ParseDuration(c.PermissionTimeout)
+	return d
 }
 
 // Find 依名稱找 binding。

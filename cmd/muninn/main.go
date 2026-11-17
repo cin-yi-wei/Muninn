@@ -5,6 +5,7 @@
 //	muninn [-config muninn.json] run                       啟動所有 binding
 //	muninn [-config muninn.json] check                     驗證設定並確認 worktree，不連 Discord
 //	muninn [-config muninn.json] adopt [--force] <binding> 接手該 worktree 最近的既有 claude session
+//	muninn permission-mcp --socket S --binding B           （內部用）claude 啟動的權限確認 MCP server
 //
 // 設定檔格式見 muninn.example.json。bot token 不放設定檔，從 token_env 指定的環境變數讀。
 // 設定檔路徑預設 $MUNINN_CONFIG，再來是 ./muninn.json。
@@ -25,6 +26,7 @@ import (
 
 	"muninn/internal/app"
 	"muninn/internal/discord"
+	"muninn/internal/permission"
 	"muninn/internal/registry"
 	"muninn/internal/runner"
 	"muninn/internal/session"
@@ -51,6 +53,8 @@ func main() {
 		err = cmdCheck(*cfgPath)
 	case "adopt":
 		err = cmdAdopt(*cfgPath, flag.Args()[1:])
+	case "permission-mcp":
+		err = cmdPermissionMCP(flag.Args()[1:])
 	default:
 		flag.Usage()
 		os.Exit(2)
@@ -151,7 +155,18 @@ func cmdRun(cfgPath string) error {
 	defer stop()
 	g, gctx := errgroup.WithContext(ctx)
 
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+		return err
+	}
+	// 權限確認：claude → permission-mcp 子程序 → 這個 socket → 對應 binding 的 App
+	socket := filepath.Join(cfg.StateDir, "permission.sock")
+
 	sender := &discord.REST{Token: token}
+	byName := map[string]*app.App{}
 	apps := map[string]*app.App{} // channel id → app
 	var runners []*runner.Runner
 	for _, b := range cfg.Bindings {
@@ -166,28 +181,35 @@ func cmdRun(cfgPath string) error {
 		logger := log.New(os.Stderr, "["+b.Name+"] ", log.LstdFlags)
 		logger.Printf("session=%s resume=%v workdir=%s", sess.ID, resume, b.Workdir())
 
+		extra := append([]string{
+			"--mcp-config", permission.MCPConfig(exe, socket, b.Name),
+			"--permission-prompt-tool", permission.PromptTool,
+		}, b.ClaudeArgs...)
 		r := runner.New(runner.Config{
 			Bin:       cfg.ClaudeBin,
 			Workdir:   b.Workdir(),
 			SessionID: sess.ID,
 			Resume:    resume,
 			Model:     b.Model,
-			ExtraArgs: b.ClaudeArgs,
+			ExtraArgs: extra,
 		})
 		runners = append(runners, r)
 		a := &app.App{
-			StateDir:     stateDir,
-			ChannelID:    b.ChannelID,
-			AllowedUsers: b.Allowed(cfg),
-			QuoteReply:   b.QuoteReply,
-			Asker:        r,
-			Sender:       sender,
-			Logf:         logger.Printf,
+			StateDir:          stateDir,
+			ChannelID:         b.ChannelID,
+			AllowedUsers:      b.Allowed(cfg),
+			QuoteReply:        b.QuoteReply,
+			AutoApprove:       b.AutoApprove,
+			PermissionTimeout: cfg.PermTimeout(),
+			Asker:             r,
+			Sender:            sender,
+			Logf:              logger.Printf,
 		}
 		if err := a.Init(); err != nil {
 			return fmt.Errorf("%s: %w", b.Name, err)
 		}
 		apps[b.ChannelID] = a
+		byName[b.Name] = a
 		g.Go(func() error { return a.RunWorker(gctx) })
 		g.Go(func() error { return a.RunSender(gctx) })
 	}
@@ -204,6 +226,15 @@ func cmdRun(cfgPath string) error {
 		},
 	}
 	g.Go(func() error { return gw.Run(gctx) })
+	g.Go(func() error {
+		return permission.Serve(gctx, socket, func(ctx context.Context, req permission.Request) permission.Decision {
+			a := byName[req.Binding]
+			if a == nil {
+				return permission.Deny("未知的 binding " + req.Binding)
+			}
+			return a.RequestPermission(ctx, req)
+		})
+	})
 	err = g.Wait()
 
 	// 平行關閉所有 claude 程序
@@ -219,4 +250,20 @@ func cmdRun(cfgPath string) error {
 		return nil
 	}
 	return err
+}
+
+// cmdPermissionMCP 是 claude 透過 --mcp-config 啟動的子程序，stdio 講 MCP，決策轉給主程序。
+func cmdPermissionMCP(args []string) error {
+	fs := flag.NewFlagSet("permission-mcp", flag.ContinueOnError)
+	socket := fs.String("socket", "", "主程序的權限 socket")
+	binding := fs.String("binding", "", "binding 名稱")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *socket == "" || *binding == "" {
+		return fmt.Errorf("permission-mcp 需要 --socket 與 --binding")
+	}
+	// stdout 是 MCP 通道，log 一律走 stderr
+	log.SetOutput(os.Stderr)
+	return permission.ServeMCP(context.Background(), os.Stdin, os.Stdout, *socket, *binding)
 }

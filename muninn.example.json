@@ -2,6 +2,7 @@
   "state_dir": "~/.local/state/muninn",
   "token_env": "DISCORD_BOT_TOKEN",
   "allowed_users": ["<你的 Discord user id>"],
+  "permission_timeout": "30m",
   "bindings": [
     {
       "name": "muninn-main",
@@ -9,7 +10,7 @@
       "repo": "~/project/muninn",
       "branch": "main",
       "worktree": "~/project/muninn-main",
-      "claude_args": ["--permission-mode", "acceptEdits"]
+      "auto_approve": false
     },
     {
       "name": "some-feature",
