@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -35,6 +36,7 @@ type fakeSender struct {
 	mu    sync.Mutex
 	fails int // 前幾次送出失敗
 	out   []sent
+	edits []string
 }
 
 func (f *fakeSender) Send(_ context.Context, ch, text, replyTo string) error {
@@ -46,6 +48,33 @@ func (f *fakeSender) Send(_ context.Context, ch, text, replyTo string) error {
 	}
 	f.out = append(f.out, sent{ch, text, replyTo})
 	return nil
+}
+
+// SendPrompt 把帶按鈕的訊息也記進 out（text 後面附上按鈕 custom_id，方便測試抓）。
+func (f *fakeSender) SendPrompt(ctx context.Context, ch, text string, buttons []discord.Button) (string, error) {
+	for _, b := range buttons {
+		text += "\n[btn " + b.Label + " " + b.CustomID + "]"
+	}
+	f.mu.Lock()
+	n := len(f.out)
+	f.mu.Unlock()
+	if err := f.Send(ctx, ch, text, ""); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("msg%d", n), nil
+}
+
+func (f *fakeSender) EditMessage(_ context.Context, ch, msgID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits = append(f.edits, msgID+":"+text)
+	return nil
+}
+
+func (f *fakeSender) editsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.edits...)
 }
 
 func (f *fakeSender) snapshot() []sent {
@@ -68,6 +97,9 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func newApp(t *testing.T, dir string, asker Asker, s Sender, allowed map[string]bool) *App {
 	a := &App{StateDir: dir, ChannelID: "c1", AllowedUsers: allowed, Asker: asker, Sender: s, Logf: func(string, ...any) {}}
+	if p, ok := s.(Prompter); ok {
+		a.Prompter = p
+	}
 	if err := a.Init(); err != nil {
 		t.Fatal(err)
 	}

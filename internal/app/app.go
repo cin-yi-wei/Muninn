@@ -58,6 +58,7 @@ type App struct {
 	PermissionTimeout time.Duration
 	Asker             Asker
 	Sender            Sender
+	Prompter          Prompter // 權限確認用（帶按鈕的訊息）
 	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir

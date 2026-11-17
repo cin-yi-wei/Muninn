@@ -160,3 +160,73 @@ func TestGatewayIdentifiesAndFiltersMessages(t *testing.T) {
 		t.Fatalf("第一個寫出的 frame 應是帶 MESSAGE_CONTENT intent 的 IDENTIFY：%s", conn.writes)
 	}
 }
+
+func TestParseInteraction(t *testing.T) {
+	accept := func(c string) bool { return c == "c1" }
+	guild := `{"id":"i1","type":3,"token":"tk","channel_id":"c1","member":{"user":{"id":"u1"}},"data":{"custom_id":"muninn|allow|ab"},"message":{"id":"m1"}}`
+	it, ok := parseInteraction(json.RawMessage(guild), accept)
+	if !ok || it.UserID != "u1" || it.CustomID != "muninn|allow|ab" || it.Token != "tk" || it.MessageID != "m1" {
+		t.Fatalf("%+v %v", it, ok)
+	}
+	dm := strings.Replace(guild, `"member":{"user":{"id":"u1"}}`, `"user":{"id":"u2"}`, 1)
+	if it, ok := parseInteraction(json.RawMessage(dm), accept); !ok || it.UserID != "u2" {
+		t.Fatalf("私訊應從 user 取 id：%+v", it)
+	}
+	if _, ok := parseInteraction(json.RawMessage(strings.Replace(guild, `"c1"`, `"c9"`, 1)), accept); ok {
+		t.Fatal("別的頻道應忽略")
+	}
+	if _, ok := parseInteraction(json.RawMessage(strings.Replace(guild, `"type":3`, `"type":2`, 1)), accept); ok {
+		t.Fatal("非按鈕互動（slash command）應忽略")
+	}
+}
+
+func TestRESTPromptEditAndInteraction(t *testing.T) {
+	type call struct {
+		method, path string
+		body         map[string]any
+	}
+	var mu sync.Mutex
+	var calls []call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		mu.Lock()
+		calls = append(calls, call{r.Method, r.URL.Path, b})
+		mu.Unlock()
+		_, _ = io.WriteString(w, `{"id":"msg42"}`)
+	}))
+	defer srv.Close()
+	rest := &REST{Token: "tok", APIBase: srv.URL}
+	ctx := context.Background()
+
+	id, err := rest.SendPrompt(ctx, "c1", "確認？", []Button{{Label: "允許", CustomID: "muninn|allow|x", Style: 3}})
+	if err != nil || id != "msg42" {
+		t.Fatalf("應回傳訊息 id：%q %v", id, err)
+	}
+	if err := rest.EditMessage(ctx, "c1", "msg42", "已允許"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rest.RespondInteraction(ctx, "i1", "tk", InteractionUpdateMessage, "已允許", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := rest.RespondInteraction(ctx, "i2", "tk2", InteractionReply, "不行", true); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	row := calls[0].body["components"].([]any)[0].(map[string]any)["components"].([]any)[0].(map[string]any)
+	if calls[0].method != "POST" || row["custom_id"] != "muninn|allow|x" || row["type"].(float64) != 2 {
+		t.Fatalf("按鈕格式不對：%+v", calls[0])
+	}
+	if calls[1].method != "PATCH" || calls[1].path != "/channels/c1/messages/msg42" || len(calls[1].body["components"].([]any)) != 0 {
+		t.Fatalf("編輯應 PATCH 並清掉按鈕：%+v", calls[1])
+	}
+	d := calls[2].body["data"].(map[string]any)
+	if calls[2].path != "/interactions/i1/tk/callback" || calls[2].body["type"].(float64) != 7 || len(d["components"].([]any)) != 0 {
+		t.Fatalf("UPDATE_MESSAGE 格式不對：%+v", calls[2])
+	}
+	if calls[3].body["data"].(map[string]any)["flags"].(float64) != 64 {
+		t.Fatalf("ephemeral 應帶 flags 64：%+v", calls[3])
+	}
+}

@@ -56,28 +56,34 @@ func (r *REST) Send(ctx context.Context, channelID, text, replyTo string) error 
 	return nil
 }
 
-// post 送一個 JSON POST；遇到 429 依 retry_after 等待後重試（最多 5 次）。
+// post 送一個 JSON POST。
 func (r *REST) post(ctx context.Context, path string, body any) error {
+	_, err := r.do(ctx, http.MethodPost, path, body)
+	return err
+}
+
+// do 送一個 JSON 請求並回傳回應內容；遇到 429 依 retry_after 等待後重試（最多 5 次）。
+func (r *REST) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.base()+path, bytes.NewReader(data))
+		req, err := http.NewRequestWithContext(ctx, method, r.base()+path, bytes.NewReader(data))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		req.Header.Set("Authorization", "Bot "+r.Token)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", "DiscordBot (muninn, 0.1)")
 		resp, err := r.client().Do(req)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		resp.Body.Close()
 		if resp.StatusCode/100 == 2 {
-			return nil
+			return respBody, nil
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < 5 {
 			wait := time.Second
@@ -91,13 +97,84 @@ func (r *REST) post(ctx context.Context, path string, body any) error {
 			}
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return nil, ctx.Err()
 			case <-time.After(wait):
 			}
 			continue
 		}
-		return fmt.Errorf("discord: POST %s 回 %d: %s", path, resp.StatusCode, respBody)
+		return nil, fmt.Errorf("discord: %s %s 回 %d: %s", method, path, resp.StatusCode, respBody)
 	}
+}
+
+// Button 是訊息底下的一顆按鈕。Style：1 藍紫、2 灰、3 綠、4 紅。
+type Button struct {
+	Label    string
+	CustomID string
+	Style    int
+}
+
+func actionRow(buttons []Button) []any {
+	if len(buttons) == 0 {
+		return []any{} // 空陣列＝移除既有按鈕
+	}
+	var comps []any
+	for _, b := range buttons {
+		comps = append(comps, map[string]any{"type": 2, "style": b.Style, "label": b.Label, "custom_id": b.CustomID})
+	}
+	return []any{map[string]any{"type": 1, "components": comps}}
+}
+
+// truncate 把文字截到 Discord 單則上限內（帶按鈕的訊息不能切多則）。
+func truncate(s string) string {
+	if utf8.RuneCountInString(s) <= MaxMessageLen {
+		return s
+	}
+	return string([]rune(s)[:MaxMessageLen-10]) + "…（已截斷）"
+}
+
+// SendPrompt 送一則帶按鈕的訊息，回傳訊息 id（之後用來編輯、拿掉按鈕）。
+func (r *REST) SendPrompt(ctx context.Context, channelID, text string, buttons []Button) (string, error) {
+	resp, err := r.do(ctx, http.MethodPost, "/channels/"+channelID+"/messages", map[string]any{
+		"content":          truncate(text),
+		"allowed_mentions": map[string]any{"parse": []string{}},
+		"components":       actionRow(buttons),
+	})
+	if err != nil {
+		return "", err
+	}
+	var m struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(resp, &m)
+	return m.ID, nil
+}
+
+// EditMessage 改寫一則訊息的文字，並拿掉所有按鈕。
+func (r *REST) EditMessage(ctx context.Context, channelID, messageID, text string) error {
+	_, err := r.do(ctx, http.MethodPatch, "/channels/"+channelID+"/messages/"+messageID, map[string]any{
+		"content":    truncate(text),
+		"components": []any{},
+	})
+	return err
+}
+
+// Interaction 回應類型。
+const (
+	InteractionReply         = 4 // 回一則新訊息（可設 ephemeral 只給按的人看）
+	InteractionUpdateMessage = 7 // 直接改寫按鈕所在的那則訊息
+)
+
+// RespondInteraction 回應按鈕互動（Discord 要求 3 秒內回）。UpdateMessage 時會一併拿掉按鈕。
+func (r *REST) RespondInteraction(ctx context.Context, id, token string, typ int, text string, ephemeral bool) error {
+	data := map[string]any{"content": truncate(text), "allowed_mentions": map[string]any{"parse": []string{}}}
+	if typ == InteractionUpdateMessage {
+		data["components"] = []any{}
+	}
+	if ephemeral {
+		data["flags"] = 64
+	}
+	_, err := r.do(ctx, http.MethodPost, "/interactions/"+id+"/"+token+"/callback", map[string]any{"type": typ, "data": data})
+	return err
 }
 
 // SplitMessage 把文字切成每段最多 limit 個字元（以 rune 計）。

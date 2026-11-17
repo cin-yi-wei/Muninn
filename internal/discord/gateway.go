@@ -62,11 +62,13 @@ func (w wsConn) Close() { _ = w.c.CloseNow() }
 // Gateway 連上 Discord Gateway（整個 bot 一條連線），把 Channels 接受的頻道的人類訊息交給 OnMessage。
 type Gateway struct {
 	Token     string
-	Channels  func(channelID string) bool                         // 回 true 才收這個頻道的訊息
-	OnMessage func(ctx context.Context, m Message) error          // 回傳錯誤會斷線重連
-	URL       string                                              // 選填，測試用
-	Dial      func(ctx context.Context, url string) (Conn, error) // 選填，測試用
-	Logf      func(format string, args ...any)
+	Channels  func(channelID string) bool                // 回 true 才收這個頻道的訊息
+	OnMessage func(ctx context.Context, m Message) error // 回傳錯誤會斷線重連
+	// OnInteraction 收按鈕點擊（只會送 Channels 接受的頻道）。錯誤只記 log，不斷線
+	OnInteraction func(ctx context.Context, it Interaction)
+	URL           string                                              // 選填，測試用
+	Dial          func(ctx context.Context, url string) (Conn, error) // 選填，測試用
+	Logf          func(format string, args ...any)
 }
 
 func (g *Gateway) logf(format string, args ...any) {
@@ -246,6 +248,11 @@ func (g *Gateway) loop(ctx context.Context, conn Conn) error {
 			case "READY":
 				gotReady.Store(true)
 				g.logf("gateway: READY")
+			case "INTERACTION_CREATE":
+				if it, ok := parseInteraction(ev.D, g.Channels); ok && g.OnInteraction != nil {
+					// 另開 goroutine：處理可能要打 HTTP，不能卡住讀取迴圈和心跳
+					go g.OnInteraction(lctx, it)
+				}
 			case "MESSAGE_CREATE":
 				m, ok := parseMessage(ev.D, g.Channels)
 				if !ok {
@@ -281,6 +288,49 @@ func parseMessage(raw json.RawMessage, accept func(string) bool) (Message, bool)
 		return Message{}, false
 	}
 	return Message{ID: d.ID, ChannelID: d.ChannelID, AuthorID: d.Author.ID, Content: d.Content, CreatedAt: d.Timestamp}, true
+}
+
+// Interaction 是一次按鈕點擊（MESSAGE_COMPONENT 互動）。
+type Interaction struct {
+	ID        string
+	Token     string
+	ChannelID string
+	UserID    string
+	CustomID  string
+	MessageID string
+}
+
+// parseInteraction 只接受訊息元件互動（type 3）；伺服器頻道的使用者在 member.user，私訊在 user。
+func parseInteraction(raw json.RawMessage, accept func(string) bool) (Interaction, bool) {
+	type user struct {
+		ID string `json:"id"`
+	}
+	var d struct {
+		ID        string `json:"id"`
+		Type      int    `json:"type"`
+		Token     string `json:"token"`
+		ChannelID string `json:"channel_id"`
+		Member    *struct {
+			User user `json:"user"`
+		} `json:"member"`
+		User *user `json:"user"`
+		Data struct {
+			CustomID string `json:"custom_id"`
+		} `json:"data"`
+		Message struct {
+			ID string `json:"id"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &d) != nil || d.Type != 3 || d.Data.CustomID == "" || accept == nil || !accept(d.ChannelID) {
+		return Interaction{}, false
+	}
+	it := Interaction{ID: d.ID, Token: d.Token, ChannelID: d.ChannelID, CustomID: d.Data.CustomID, MessageID: d.Message.ID}
+	if d.Member != nil {
+		it.UserID = d.Member.User.ID
+	} else if d.User != nil {
+		it.UserID = d.User.ID
+	}
+	return it, true
 }
 
 func writeJSON(ctx context.Context, conn Conn, v any) error {

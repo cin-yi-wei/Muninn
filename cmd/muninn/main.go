@@ -224,6 +224,21 @@ func cmdRun(cfgPath string) error {
 		OnMessage: func(ctx context.Context, m discord.Message) error {
 			return apps[m.ChannelID].OnMessage(ctx, m)
 		},
+		OnInteraction: func(ctx context.Context, it discord.Interaction) {
+			res := apps[it.ChannelID].HandleButton(it.CustomID, it.UserID)
+			if !res.Handled {
+				return
+			}
+			typ := discord.InteractionReply
+			if res.Update {
+				typ = discord.InteractionUpdateMessage
+			}
+			rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := sender.RespondInteraction(rctx, it.ID, it.Token, typ, res.Text, !res.Update); err != nil {
+				log.Printf("回應按鈕互動失敗: %v", err)
+			}
+		},
 	}
 	g.Go(func() error { return gw.Run(gctx) })
 	g.Go(func() error {
