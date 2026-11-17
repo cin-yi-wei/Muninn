@@ -2,7 +2,7 @@
 
 > 重寫 claude_cron：拿掉 tmux，改用 headless `claude -p`。語言 Go。全新 repo。
 > 名字取自奧丁的記憶渡鴉 Muninn——每天飛出去打探、回來跟主人報告，正是 agent 派到各頻道跑完回報的畫面。（拆元件時「思想」渡鴉 Huginn 可留給另一半用。）
-> 狀態：M1～M4 完成（2026-11-17 實機驗過；M2 的「接手既有 session」只驗到單元測試與 adopt 指令，實機對話未測），下一步 M5。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
+> 狀態：M1～M5 全部完成（2026-11-17 實機驗過）。Discord 與 Telegram 同時運作。
 
 ## 1. 為什麼重寫
 
@@ -113,3 +113,12 @@ claude_cron 開的 session 就是普通 claude session（`~/.claude/projects/<�
   - 手寫、沒有 `last_checked` 的 trigger 永遠不會觸發（每輪都從「現在」往後找）。改成從 `created_at` 起算，都沒有就第一輪寫回起算點。
   - **binding 建好、還沒收過訊息就重啟 → `--resume` 一個 claude 還沒建立的 session → "No conversation found"，這個 binding 卡死。**改成每次啟動前檢查 `~/.claude/projects/*/<id>.jsonl` 是否存在，再決定用 `--resume` 還是 `--session-id`。
 - 排程訊息 ID 由排定時間導出，先寫標記（含 job id）再寫 inbox，崩潰在任一點都不會重複或漏送。
+
+## 14. M5 實測紀錄（2026-11-17）
+
+- 排程重寫成 Muninn 自己的功能：頻道裡的 claude 透過 Muninn MCP 工具（schedule_add / list / remove / pause / run_now）管理自己頻道的任務；不沿用、不匯入 claude_cron 的 triggers.json。
+- 實測發現 `claude -p` 會載入使用者全域 skill，曾照別套系統的 skill 去建排程；改用 `--append-system-prompt` 明講只用 Muninn 工具，並停用內建 Cron 工具。整合測試只放行 mcp__muninn__*。
+- 活動旁白：每輪一則「工作中」訊息原地更新（≥2 秒一次），跑完改成總結。
+- Telegram：long polling、inline 按鈕、Markdown→HTML（失敗退回純文字）、/status 與 /status@bot。私訊與群組都實機驗過（對話、權限按鈕、排程建立／觸發／刪除）。
+  - 群組要在 BotFather 關隱私模式**並把 bot 重新加入群組**才收得到一般訊息。
+  - 有 token 就輪詢；未綁定的聊天室傳訊息時，bot 回覆 chat id 與 user id，方便設定。

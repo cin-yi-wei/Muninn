@@ -1,0 +1,25 @@
+# Muninn 的 systemd user unit。安裝：
+#   cp deploy/muninn.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   systemctl --user enable --now muninn
+#   loginctl enable-linger $USER   # 沒登入時也保持執行（開機自動啟動）
+#
+# token 放在 ~/.config/muninn/env（只放 KEY=VALUE，權限 600），設定在 ~/.config/muninn/muninn.json。
+[Unit]
+Description=Muninn — 聊天頻道驅動的 headless Claude
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/muninn/env
+# claude CLI 與 git 要在 PATH 上
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/project/muninn-main/bin/muninn -config %h/.config/muninn/muninn.json run
+Restart=on-failure
+RestartSec=5
+# 整體記憶體上限（含所有 claude 子程序）；單一 binding 另由 memory_limit_mb 控管
+MemoryMax=6G
+# 關機時給 claude 程序時間收尾
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

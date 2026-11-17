@@ -5,7 +5,7 @@ claude_cron 的重寫版：拿掉 tmux，改用 headless `claude -p`（stream-js
 
 名字取自奧丁的記憶渡鴉 Muninn——飛出去打探、回來報告。
 
-設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M4 完成；M5 的活動旁白完成，Telegram 待做。
+設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M5 完成，Discord 與 Telegram 都可用。
 
 ## 使用方式
 
