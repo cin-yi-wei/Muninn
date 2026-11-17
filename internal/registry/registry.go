@@ -47,7 +47,11 @@ type Binding struct {
 	QuoteReply   bool     `json:"quote_reply"`
 	Paused       bool     `json:"paused"`       // true：不收這個頻道的訊息
 	AutoApprove  bool     `json:"auto_approve"` // true：claude 的權限請求直接放行，不貼頻道確認
+	Activity     *bool    `json:"activity"`     // claude 跑的時候在頻道顯示正在做什麼，預設 true
 }
+
+// ActivityOn 回傳是否顯示活動旁白（沒設定時預設開）。
+func (b Binding) ActivityOn() bool { return b.Activity == nil || *b.Activity }
 
 // Workdir 回傳 claude 實際的工作目錄。
 func (b Binding) Workdir() string {

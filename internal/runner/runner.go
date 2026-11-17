@@ -66,9 +66,31 @@ type event struct {
 
 type assistantMessage struct {
 	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string          `json:"type"`
+		Text  string          `json:"text"`
+		Name  string          `json:"name"`  // tool_use
+		Input json.RawMessage `json:"input"` // tool_use
 	} `json:"content"`
+}
+
+// Activity 是 claude 一輪對話中途的動作（目前只回報工具呼叫）。
+type Activity struct {
+	Tool  string
+	Input json.RawMessage
+}
+
+type activityKey struct{}
+
+// WithActivity 讓這次 Ask 在 claude 每次呼叫工具時回呼 fn（在 Ask 的 goroutine 裡同步呼叫，fn 不要阻塞）。
+func WithActivity(ctx context.Context, fn func(Activity)) context.Context {
+	return context.WithValue(ctx, activityKey{}, fn)
+}
+
+// Report 回報一個動作給 ctx 上掛的 callback（沒掛就什麼都不做）。
+func Report(ctx context.Context, a Activity) {
+	if fn, ok := ctx.Value(activityKey{}).(func(Activity)); ok && fn != nil {
+		fn(a)
+	}
 }
 
 // ErrExited 表示 claude 程序在一輪對話結束前就退出了。
@@ -251,6 +273,9 @@ func (r *Runner) Ask(ctx context.Context, text string) (rep Reply, err error) {
 					for _, c := range am.Content {
 						if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
 							assistantText = append(assistantText, c.Text)
+						}
+						if c.Type == "tool_use" {
+							Report(ctx, Activity{Tool: c.Name, Input: c.Input})
 						}
 					}
 				}

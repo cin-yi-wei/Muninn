@@ -68,6 +68,7 @@ type App struct {
 	SessionID         string           // 顯示用
 	MaxAttempts       int              // 同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
 	Schedules         *scheduler.Store // 選填：這個頻道的定時任務
+	Activity          bool             // true：claude 跑的時候在頻道顯示正在做什麼（活動旁白）
 	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir
@@ -176,7 +177,25 @@ func (a *App) RunWorker(ctx context.Context) error {
 		if handoff != "" {
 			prompt = handoff + prompt
 		}
-		rep, err := a.Asker.Ask(ctx, prompt)
+		askCtx := ctx
+		var feed *activityFeed
+		if a.Activity {
+			feed = a.newActivityFeed()
+			askCtx = runner.WithActivity(ctx, feed.add)
+		}
+		rep, err := a.Asker.Ask(askCtx, prompt)
+		if feed != nil {
+			switch {
+			case ctx.Err() != nil:
+				feed.finish("⚪ 中止（Muninn 關機）")
+			case errors.Is(err, runner.ErrInterrupted):
+				feed.finish("⏹ 已中斷")
+			case err != nil || rep.IsError:
+				feed.finish("⚠️ 出錯")
+			default:
+				feed.finish("✅ 完成")
+			}
+		}
 		if ctx.Err() != nil {
 			// 正常關機不算一次失敗：次數退回去，job 留在 pending，下次啟動回放
 			job.Attempts--

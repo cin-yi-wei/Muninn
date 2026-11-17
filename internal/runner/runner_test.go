@@ -243,3 +243,27 @@ func must(b []byte, err error) []byte {
 	}
 	return b
 }
+
+func TestActivityCallback(t *testing.T) {
+	bin, dir := fakeClaude(t, `#!/bin/sh
+while IFS= read -r line; do
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"先看看"},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a"}}]}}'
+  echo '{"type":"result","subtype":"success","result":"好了"}'
+done
+`)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	var got []string
+	ctx := WithActivity(ctx5s(t), func(a Activity) { got = append(got, a.Tool+" "+string(a.Input)) })
+	if _, err := r.Ask(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != `Bash {"command":"ls"}` || got[1] != `Read {"file_path":"/a"}` {
+		t.Fatalf("%q", got)
+	}
+	// 沒掛 callback 也不能出事
+	if _, err := r.Ask(ctx5s(t), "x"); err != nil {
+		t.Fatal(err)
+	}
+}
