@@ -323,6 +323,7 @@ func (d *daemon) startBinding(cfg registry.Config, b registry.Binding) (*liveBin
 		Resume:        resume,
 		Model:         b.Model,
 		ExtraArgs:     extra,
+		CostFile:      filepath.Join(stateDir, "cost_total"),
 	})
 	var out interface {
 		app.Sender

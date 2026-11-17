@@ -250,8 +250,8 @@ func (a *App) RunWorker(ctx context.Context) error {
 		} else if rep.IsError {
 			text = fmt.Sprintf("⚠️ Muninn：claude 回報錯誤（%s）\n%s", rep.Subtype, rep.Text)
 		}
-		a.logf("worker: %s 完成，耗時 %s，apiKeySource=%q rateLimit=%q cost≈$%.4f（程序累計 $%.4f）",
-			id, time.Since(start).Round(time.Millisecond), rep.APIKeySource, rep.RateLimit, rep.CostUSD, rep.TotalCostUSD)
+		a.logf("worker: %s 完成，耗時 %s，apiKeySource=%q rateLimit=%q cost≈%s（session 累計 $%.4f）",
+			id, time.Since(start).Round(time.Millisecond), rep.APIKeySource, rep.RateLimit, costText(rep), rep.TotalCostUSD)
 		return a.finish(id, job, text)
 	})
 }
@@ -271,8 +271,16 @@ func (a *App) Spontaneous(rep runner.Reply) {
 		a.logf("spontaneous: 寫入 outbox 失敗: %v", err)
 		return
 	}
-	a.logf("spontaneous: 背景任務回報的回合完成，cost≈$%.4f（程序累計 $%.4f）", rep.CostUSD, rep.TotalCostUSD)
+	a.logf("spontaneous: 背景任務回報的回合完成，cost≈%s（session 累計 $%.4f）", costText(rep), rep.TotalCostUSD)
 	wake(a.wakeSender)
+}
+
+// costText 是 log 裡單輪花費的寫法；接手舊 session 的第一輪算不出來，寫「?」。
+func costText(rep runner.Reply) string {
+	if !rep.CostKnown {
+		return "?（接手舊 session 的第一輪，沒有累計基準）"
+	}
+	return fmt.Sprintf("$%.4f", rep.CostUSD)
 }
 
 // finish 把回覆寫進 outbox，並把 inbox job 標成完成。

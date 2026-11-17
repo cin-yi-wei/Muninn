@@ -422,3 +422,61 @@ done
 		t.Fatalf("callback 應拿到完整的 rate_limit_info：%q", got)
 	}
 }
+
+// costClaude 模擬 --resume 的 claude：total_cost_usd 從 session 以前的累計值（BASE）接著加，每輪 +0.4
+const costClaude = `#!/bin/sh
+t=$(cat "$(dirname "$0")/base")
+while IFS= read -r line; do
+  t=$(echo "$t + 0.4" | bc)
+  case "$t" in .*) t="0$t";; esac
+  echo "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\",\"total_cost_usd\":$t}"
+done
+`
+
+func TestCostBaselineSurvivesRestart(t *testing.T) {
+	bin, dir := fakeClaude(t, costClaude)
+	_ = os.WriteFile(filepath.Join(dir, "base"), []byte("288"), 0o644)
+	costFile := filepath.Join(t.TempDir(), "cost_total")
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u", Resume: true, CostFile: costFile})
+	defer r.Close(context.Background())
+
+	// 接手舊 session、沒有基準：第一輪花費未知，不能把 288 當成這一輪
+	rep, err := r.Ask(ctx5s(t), "x")
+	if err != nil || rep.CostKnown {
+		t.Fatalf("沒有基準時花費應標成未知：%+v %v", rep, err)
+	}
+	rep, _ = r.Ask(ctx5s(t), "x")
+	if !rep.CostKnown || !near(rep.CostUSD, 0.4) {
+		t.Fatalf("第二輪應是 0.4：%+v", rep)
+	}
+	// 重啟程序：claude 從 288.8 接著加，基準要從檔案讀回來
+	_ = r.Close(context.Background())
+	_ = os.WriteFile(filepath.Join(dir, "base"), []byte("288.8"), 0o644)
+	rep, _ = r.Ask(ctx5s(t), "x")
+	if !rep.CostKnown || !near(rep.CostUSD, 0.4) {
+		t.Fatalf("重啟後第一輪不能把舊累計算進來：%+v", rep)
+	}
+}
+
+func TestCostCounterResetIsNotNegative(t *testing.T) {
+	bin, dir := fakeClaude(t, costClaude)
+	_ = os.WriteFile(filepath.Join(dir, "base"), []byte("0"), 0o644)
+	costFile := filepath.Join(t.TempDir(), "cost_total")
+	_ = os.WriteFile(costFile, []byte("50"), 0o644) // 換了新 session，累計從 0 重算
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u", CostFile: costFile})
+	defer r.Close(context.Background())
+	rep, _ := r.Ask(ctx5s(t), "x")
+	if !rep.CostKnown || !near(rep.CostUSD, 0.4) {
+		t.Fatalf("累計變小代表重算，這一輪就是新的累計值：%+v", rep)
+	}
+}
+
+func TestNoCostFileKeepsOldBehaviour(t *testing.T) {
+	bin, dir := fakeClaude(t, "")
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	rep, _ := r.Ask(ctx5s(t), "x")
+	if !rep.CostKnown || !near(rep.CostUSD, 0.01) {
+		t.Fatalf("新 session（--session-id）從 0 開始，花費已知：%+v", rep)
+	}
+}

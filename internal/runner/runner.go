@@ -36,6 +36,10 @@ type Config struct {
 	// 光看 Resume / 是否啟動過不可靠：claude 要等第一則訊息才會寫出 session 檔，
 	// 在那之前重啟就去 --resume，claude 會回 "No conversation found"，這個 binding 從此卡死。
 	SessionExists func() bool
+	// CostFile 選填：存最後一次看到的 total_cost_usd。claude 用 --resume 接回 session 時，
+	// total_cost_usd 會從這個 session 以前的累計值接著加；沒有這個基準，重啟後第一輪
+	// 會把整個 session 的歷史花費算成這一輪的。
+	CostFile string
 }
 
 // Reply 是一輪對話（一則 user 訊息到 result 事件）的結果。
@@ -44,7 +48,8 @@ type Reply struct {
 	IsError      bool    // result.is_error
 	Subtype      string  // result.subtype，例如 success / error_max_turns
 	SessionID    string  // 事件裡回報的 session id
-	CostUSD      float64 // 這一輪的估算花費（訂閱制下也會給估算值，不代表實際扣款）
+	CostUSD      float64 // 這一輪的估算花費（訂閱制下也會給估算值，不代表實際扣款）；CostKnown 為 false 時是 0
+	CostKnown    bool    // false：接手舊 session、還沒有累計基準，算不出這一輪花多少
 	TotalCostUSD float64 // result.total_cost_usd：同一個程序啟動以來的累計值
 	APIKeySource string  // init 事件的 apiKeySource；"none" 代表走 OAuth 訂閱而非 API key
 	RateLimit    string  // 最近一次 rate_limit_event 的 rateLimitType（訂閱視窗，例如 seven_day）
@@ -123,7 +128,9 @@ type Runner struct {
 
 	statMu       sync.Mutex
 	apiKeySource string
-	lastTotal    float64 // 上一輪 result 的累計花費，用來算單輪差額；重啟程序時歸零
+	lastTotal    float64 // 上一輪 result 的累計花費，用來算單輪差額
+	baseKnown    bool    // lastTotal 是否可信（見 Config.CostFile）
+	resumed      bool    // 目前這個程序是不是用 --resume 啟動的
 	rateLimit    string
 
 	// 以下不需持有 mu 就能讀，給 !status、閒置回收、!cancel 用
@@ -218,6 +225,7 @@ func (r *Runner) args() []string {
 	if r.cfg.SessionExists != nil {
 		resume = r.cfg.SessionExists()
 	}
+	r.resumed = resume
 	if resume {
 		a = append(a, "--resume", r.cfg.SessionID)
 	} else {
@@ -274,7 +282,14 @@ func (r *Runner) start() error {
 	}
 	done := make(chan struct{})
 	r.statMu.Lock()
-	r.lastTotal = 0
+	r.lastTotal, r.baseKnown = 0, !r.resumed // 新開的 session 從 0 算起
+	if r.cfg.CostFile != "" {
+		if b, err := os.ReadFile(r.cfg.CostFile); err == nil {
+			if v, err := strconv.ParseFloat(strings.TrimSpace(string(b)), 64); err == nil {
+				r.lastTotal, r.baseKnown = v, true
+			}
+		}
+	}
 	r.statMu.Unlock()
 	r.bgTasks.Store(0)
 	r.spontBusy.Store(false)
@@ -526,7 +541,6 @@ func (r *Runner) reply(ev event, assistantText []string) Reply {
 		IsError:      ev.IsError,
 		Subtype:      ev.Subtype,
 		SessionID:    ev.SessionID,
-		CostUSD:      ev.TotalCostUSD - r.lastTotal,
 		TotalCostUSD: ev.TotalCostUSD,
 		APIKeySource: r.apiKeySource,
 		RateLimit:    r.rateLimit,
@@ -534,7 +548,19 @@ func (r *Runner) reply(ev event, assistantText []string) Reply {
 	if rep.Text == "" {
 		rep.Text = strings.Join(assistantText, "\n\n")
 	}
-	r.lastTotal = ev.TotalCostUSD
+	switch {
+	case !r.baseKnown:
+		// 接手舊 session 的第一輪：累計值包含以前的花費，這一輪花多少算不出來
+	case ev.TotalCostUSD < r.lastTotal:
+		// 累計值變小：換了新 session 或 claude 重算，這一輪的花費就是新的累計值
+		rep.CostUSD, rep.CostKnown = ev.TotalCostUSD, true
+	default:
+		rep.CostUSD, rep.CostKnown = ev.TotalCostUSD-r.lastTotal, true
+	}
+	r.lastTotal, r.baseKnown = ev.TotalCostUSD, true
+	if r.cfg.CostFile != "" {
+		_ = os.WriteFile(r.cfg.CostFile, []byte(strconv.FormatFloat(ev.TotalCostUSD, 'f', -1, 64)+"\n"), 0o644)
+	}
 	return rep
 }
 
