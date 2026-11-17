@@ -2,7 +2,7 @@
 
 > 重寫 claude_cron：拿掉 tmux，改用 headless `claude -p`。語言 Go。全新 repo。
 > 名字取自奧丁的記憶渡鴉 Muninn——每天飛出去打探、回來跟主人報告，正是 agent 派到各頻道跑完回報的畫面。（拆元件時「思想」渡鴉 Huginn 可留給另一半用。）
-> 狀態：設計定稿，進入 M1 實作。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
+> 狀態：M1 完成（2026-11-17 實機驗過），下一步 M2。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
 
 ## 1. 為什麼重寫
 
@@ -44,7 +44,7 @@ claude CLI 現在 headless（`-p`）功能已經完整，可以用結構化事�
 ## 6. 里程碑（就算全做，也要分段才驗得了）
 
 - **M1**：單一 Discord 頻道 → headless runner → 回話。證明 stream-json 跑得通、計費扣對邊。
-- **M2**：registry 綁定 + 每頻道 repo/分支 worktree。
+- **M2**：registry 綁定 + 每頻道 repo/分支 worktree + 接手 claude_cron 既有 session（見 §8）。
 - **M3**：permission MCP 確認鏡像 + auto-approve。
 - **M4**：scheduler、多頻道、supervisor（記憶體/閒置/OOM）。
 - **M5**：Telegram、活動旁白串流。
@@ -54,3 +54,32 @@ claude CLI 現在 headless（`-p`）功能已經完整，可以用結構化事�
 - **claude -p 計費**：你決定不測、算過。萬一實際走 API 不是訂閱，這是要回頭的最大風險。
 - 長駐 headless 的穩定度和記憶體占用還沒實測。
 - `--permission-prompt-tool` 的實際行為要到 M3 才會真的驗到。
+
+## 8. 接手 claude_cron 既有 session（M2）
+
+claude_cron 開的 session 就是普通 claude session（`~/.claude/projects/<目錄>/<id>.jsonl`），Muninn 用 `--resume <id>` 就能接上。2026-11-17 實測：
+
+- resume 後 session id 不變，是接續而不是分岔。
+- 從不同目錄 resume 也接得到、前文記得，worktree 搬家不影響。
+
+做法：registry 的 binding 加 `session_id` 欄位，加一個 `muninn adopt <binding>` 指令，一次做完：
+
+1. 從該 worktree 對應的 projects 目錄找最新的 jsonl，取得 session id（claude_cron 本身沒記 id）。
+2. 停掉 claude_cron 那邊的 binding / tmux session。**同一個 session 同時只能有一個程序在寫**，兩邊同時開會把歷史寫亂。
+3. 把 id 寫進 binding，Muninn 以 `--resume` 啟動。
+4. 自動送一則交接說明：之後直接回文字，不用再讀 current_job.json、寫 outbox JSON。舊歷史裡全是 claude_cron 的檔案協定，不講清楚它會照舊去寫檔。
+
+要注意：
+
+- worktree 的 `.claude/settings.local.json` 掛著 `claude-cron permission-gate` 與 `session-hook`，headless 一樣會吃到。接手時要拿掉或改掛 M3 的權限 MCP，不然兩套權限閘同時跑。
+- 長 session 接手後的第一輪要把整段歷史讀進 cache，會慢而且貴（幾十秒、幾毛錢），之後就正常了。
+
+## 9. M1 實測紀錄（2026-11-17）
+
+- 計費：init 事件 `apiKeySource="none"`、rate_limit_event 為 `seven_day` 訂閱視窗，確認走訂閱而非 API key。§7 第一條風險解除。
+- 速度：冷啟動第一則約 33 秒，同程序第二則 4.2 秒，長駐的效益明顯。
+- 記憶體：一個 binding（muninn + 一個 claude）峰值約 500MB（3 分鐘 497MB、7.5 分鐘 547MB），M4 估上限時以此為量級。
+- `total_cost_usd` 是程序累計值，單則花費要自己算差額。
+- 程序要自成 process group，取消時整組砍，否則子程序握著 stdout 會卡住讀取端。
+- 在 Muninn 裡要 claude「把 Muninn 停掉」，它會拒絕（判斷自己跑在裡面）。停止／重啟這類指令應由 Muninn 自己攔截處理（M4 supervisor），不要交給 claude。
+- `-p` 模式沒有權限 MCP 時，工作目錄外的讀取會被直接拒絕，要等 M3。
