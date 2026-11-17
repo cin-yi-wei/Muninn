@@ -142,8 +142,8 @@ func (a *App) RunWorker(ctx context.Context) error {
 		} else if rep.IsError {
 			text = fmt.Sprintf("⚠️ Muninn：claude 回報錯誤（%s）\n%s", rep.Subtype, rep.Text)
 		}
-		a.logf("worker: %s 完成，耗時 %s，apiKeySource=%q rateLimit=%q cost≈$%.4f",
-			id, time.Since(start).Round(time.Millisecond), rep.APIKeySource, rep.RateLimit, rep.CostUSD)
+		a.logf("worker: %s 完成，耗時 %s，apiKeySource=%q rateLimit=%q cost≈$%.4f（程序累計 $%.4f）",
+			id, time.Since(start).Round(time.Millisecond), rep.APIKeySource, rep.RateLimit, rep.CostUSD, rep.TotalCostUSD)
 		out := OutboxJob{ID: id, ChannelID: job.ChannelID, ReplyTo: job.MessageID, Text: text}
 		if err := a.outbox.Put(out.ID, out); err != nil && !errors.Is(err, queue.ErrExists) {
 			return err

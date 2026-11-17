@@ -37,7 +37,8 @@ type Reply struct {
 	IsError      bool    // result.is_error
 	Subtype      string  // result.subtype，例如 success / error_max_turns
 	SessionID    string  // 事件裡回報的 session id
-	CostUSD      float64 // result.total_cost_usd（訂閱制下也會給估算值，不代表實際扣款）
+	CostUSD      float64 // 這一輪的估算花費（訂閱制下也會給估算值，不代表實際扣款）
+	TotalCostUSD float64 // result.total_cost_usd：同一個程序啟動以來的累計值
 	APIKeySource string  // init 事件的 apiKeySource；"none" 代表走 OAuth 訂閱而非 API key
 	RateLimit    string  // 最近一次 rate_limit_event 的 rateLimitType（訂閱視窗，例如 seven_day）
 }
@@ -79,6 +80,7 @@ type Runner struct {
 	started bool          // 曾經成功啟動過（之後重啟一律 --resume）
 
 	apiKeySource string
+	lastTotal    float64 // 上一輪 result 的累計花費，用來算單輪差額；重啟程序時歸零
 	rateLimit    string
 }
 
@@ -167,6 +169,7 @@ func (r *Runner) start() error {
 		close(done)
 	}()
 	r.cmd, r.stdin, r.events, r.done = cmd, stdin, events, done
+	r.lastTotal = 0
 	r.started = true
 	return nil
 }
@@ -247,13 +250,15 @@ func (r *Runner) reply(ev event, assistantText []string) Reply {
 		IsError:      ev.IsError,
 		Subtype:      ev.Subtype,
 		SessionID:    ev.SessionID,
-		CostUSD:      ev.TotalCostUSD,
+		CostUSD:      ev.TotalCostUSD - r.lastTotal,
+		TotalCostUSD: ev.TotalCostUSD,
 		APIKeySource: r.apiKeySource,
 		RateLimit:    r.rateLimit,
 	}
 	if rep.Text == "" {
 		rep.Text = strings.Join(assistantText, "\n\n")
 	}
+	r.lastTotal = ev.TotalCostUSD
 	return rep
 }
 

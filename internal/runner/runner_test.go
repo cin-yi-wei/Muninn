@@ -27,7 +27,7 @@ while IFS= read -r line; do
   echo 'not json noise'
   echo '{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"seven_day"}}'
   echo '{"type":"assistant","message":{"content":[{"type":"text","text":"思考中"}]}}'
-  echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"s1\",\"result\":\"turn=$n pid=$$\",\"total_cost_usd\":0.01}"
+  echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"s1\",\"result\":\"turn=$n pid=$$\",\"total_cost_usd\":0.0$n}"
 done
 `
 	}
@@ -63,7 +63,8 @@ func TestAskReusesOneProcess(t *testing.T) {
 	if pid(r1.Text) != pid(r2.Text) {
 		t.Fatalf("兩輪應在同一個程序：%q vs %q", r1.Text, r2.Text)
 	}
-	if r1.APIKeySource != "none" || r1.RateLimit != "seven_day" || r1.CostUSD != 0.01 {
+	// 假 claude 第 n 輪回報累計 0.0n，單輪差額應都是 0.01
+	if r1.APIKeySource != "none" || r1.RateLimit != "seven_day" || !near(r1.CostUSD, 0.01) || !near(r2.CostUSD, 0.01) || !near(r2.TotalCostUSD, 0.02) {
 		t.Fatalf("計費相關欄位沒解析到：%+v", r1)
 	}
 	args, _ := os.ReadFile(filepath.Join(dir, "args.log"))
@@ -144,3 +145,5 @@ while IFS= read -r line; do sleep 30; done
 		t.Fatalf("取消後沒有及時返回：%s", time.Since(start))
 	}
 }
+
+func near(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
