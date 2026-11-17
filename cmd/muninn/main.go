@@ -1,26 +1,23 @@
-// muninn M1：單一 Discord 頻道 → 長駐 headless claude → 回話。
+// muninn：Discord 頻道 → 每個 binding 一個長駐 headless claude → 回話。
 //
-// 設定全走環境變數（M2 才會有 registry 設定檔）：
+// 用法：
 //
-//	DISCORD_BOT_TOKEN       必填，bot token
-//	MUNINN_CHANNEL_ID       必填，要服務的頻道 id
-//	MUNINN_WORKDIR          claude 的工作目錄，預設目前目錄
-//	MUNINN_STATE_DIR        佇列與 session 狀態，預設 ./state
-//	MUNINN_ALLOWED_USERS    逗號分隔的 Discord user id 白名單
-//	MUNINN_ALLOW_ANYONE=1   不設白名單時必須明確打開，否則拒絕啟動
-//	MUNINN_MODEL            選填，claude --model
-//	MUNINN_CLAUDE_BIN       選填，claude 執行檔路徑
-//	MUNINN_QUOTE_REPLY=1    選填，回覆掛在原訊息底下（預設直接發一般訊息）
-//	MUNINN_CLAUDE_ARGS      選填，額外 flag（以空白分隔），例如 "--permission-mode acceptEdits"
+//	muninn [-config muninn.json] run                       啟動所有 binding
+//	muninn [-config muninn.json] check                     驗證設定並確認 worktree，不連 Discord
+//	muninn [-config muninn.json] adopt [--force] <binding> 接手該 worktree 最近的既有 claude session
+//
+// 設定檔格式見 muninn.example.json。bot token 不放設定檔，從 token_env 指定的環境變數讀。
+// 設定檔路徑預設 $MUNINN_CONFIG，再來是 ./muninn.json。
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,85 +25,198 @@ import (
 
 	"muninn/internal/app"
 	"muninn/internal/discord"
+	"muninn/internal/registry"
 	"muninn/internal/runner"
+	"muninn/internal/session"
+	"muninn/internal/worktree"
 )
 
 func main() {
-	if err := run(); err != nil {
+	def := os.Getenv("MUNINN_CONFIG")
+	if def == "" {
+		def = "muninn.json"
+	}
+	cfgPath := flag.String("config", def, "設定檔路徑")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "用法: muninn [-config 檔案] run | check | adopt [--force] <binding>\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
+	var err error
+	switch flag.Arg(0) {
+	case "run":
+		err = cmdRun(*cfgPath)
+	case "check":
+		err = cmdCheck(*cfgPath)
+	case "adopt":
+		err = cmdAdopt(*cfgPath, flag.Args()[1:])
+	default:
+		flag.Usage()
+		os.Exit(2)
+	}
+	if err != nil {
 		log.Fatalf("muninn: %v", err)
 	}
 }
 
-func run() error {
-	token := os.Getenv("DISCORD_BOT_TOKEN")
-	channel := os.Getenv("MUNINN_CHANNEL_ID")
-	if token == "" || channel == "" {
-		return fmt.Errorf("需要設定 DISCORD_BOT_TOKEN 與 MUNINN_CHANNEL_ID")
+// prepare 載入設定並確保每個未暫停 binding 的 worktree 就緒。
+func prepare(cfgPath string) (registry.Config, error) {
+	cfg, err := registry.Load(cfgPath)
+	if err != nil {
+		return cfg, err
 	}
-	workdir := envOr("MUNINN_WORKDIR", ".")
-	stateDir := envOr("MUNINN_STATE_DIR", "state")
-
-	allowed := map[string]bool{}
-	for _, u := range strings.Split(os.Getenv("MUNINN_ALLOWED_USERS"), ",") {
-		if u = strings.TrimSpace(u); u != "" {
-			allowed[u] = true
+	for _, b := range cfg.Bindings {
+		if b.Paused {
+			log.Printf("%s: 已暫停，略過", b.Name)
+			continue
+		}
+		created, err := worktree.Ensure(b.Repo, b.Branch, b.Base, b.Worktree)
+		if err != nil {
+			return cfg, fmt.Errorf("%s: %w", b.Name, err)
+		}
+		if created {
+			log.Printf("%s: 已建立 worktree %s（分支 %s）", b.Name, b.Worktree, b.Branch)
 		}
 	}
-	if len(allowed) == 0 && os.Getenv("MUNINN_ALLOW_ANYONE") != "1" {
-		// 頻道裡任何人都能操控 claude 是很危險的預設，要求明確表態
-		return fmt.Errorf("未設定 MUNINN_ALLOWED_USERS；若真的要開放所有人，請設 MUNINN_ALLOW_ANYONE=1")
-	}
+	return cfg, nil
+}
 
-	sess, resume, err := app.LoadOrCreateSession(stateDir)
+func cmdCheck(cfgPath string) error {
+	cfg, err := prepare(cfgPath)
 	if err != nil {
-		return fmt.Errorf("session 狀態: %w", err)
-	}
-	log.Printf("muninn: session=%s resume=%v workdir=%s", sess.ID, resume, workdir)
-
-	r := runner.New(runner.Config{
-		Bin:       os.Getenv("MUNINN_CLAUDE_BIN"),
-		Workdir:   workdir,
-		SessionID: sess.ID,
-		Resume:    resume,
-		Model:     os.Getenv("MUNINN_MODEL"),
-		ExtraArgs: strings.Fields(os.Getenv("MUNINN_CLAUDE_ARGS")),
-	})
-
-	a := &app.App{
-		StateDir:     stateDir,
-		ChannelID:    channel,
-		AllowedUsers: allowed,
-		QuoteReply:   os.Getenv("MUNINN_QUOTE_REPLY") == "1",
-		Asker:        r,
-		Sender:       &discord.REST{Token: token},
-	}
-	if err := a.Init(); err != nil {
 		return err
 	}
-	gw := &discord.Gateway{Token: token, ChannelID: channel, OnMessage: a.OnMessage}
+	for _, b := range cfg.Bindings {
+		st := "新 session"
+		if s, ok, err := session.Load(cfg.StateDirFor(b.Name)); err != nil {
+			st = "session 狀態壞掉: " + err.Error()
+		} else if ok {
+			st = "resume " + s.ID
+		}
+		fmt.Printf("%-20s 頻道 %s  工作目錄 %s  分支 %q  暫停=%v  %s\n", b.Name, b.ChannelID, b.Workdir(), b.Branch, b.Paused, st)
+	}
+	fmt.Printf("設定 OK，共 %d 個 binding\n", len(cfg.Bindings))
+	return nil
+}
+
+func cmdAdopt(cfgPath string, args []string) error {
+	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
+	force := fs.Bool("force", false, "已綁定別的 session 時強制改綁")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("用法: muninn adopt [--force] <binding>")
+	}
+	cfg, err := registry.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	b, ok := cfg.Find(fs.Arg(0))
+	if !ok {
+		return fmt.Errorf("找不到 binding %q", fs.Arg(0))
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	c, err := session.FindLatest(filepath.Join(home, ".claude"), b.Workdir())
+	if err != nil {
+		return err
+	}
+	age := time.Since(c.ModTime).Round(time.Second)
+	if err := session.Adopt(cfg.StateDirFor(b.Name), c, *force); err != nil {
+		return err
+	}
+	fmt.Printf("%s 已綁定 session %s（最後寫入 %s 前）\n下一則訊息會附上交接說明。\n", b.Name, c.ID, age)
+	if age < 10*time.Minute {
+		// 同一個 session 同時只能一個程序在寫，兩邊同時開會把歷史寫亂
+		fmt.Printf("⚠️ 這個 session %s 前還有寫入，原本的 claude_cron binding 可能還在跑。\n   啟動 Muninn 之前，務必先停掉它。\n", age)
+	}
+	return nil
+}
+
+func cmdRun(cfgPath string) error {
+	cfg, err := prepare(cfgPath)
+	if err != nil {
+		return err
+	}
+	token := os.Getenv(cfg.TokenEnv)
+	if token == "" {
+		return fmt.Errorf("環境變數 %s 沒有設定 bot token", cfg.TokenEnv)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
 	g, gctx := errgroup.WithContext(ctx)
+
+	sender := &discord.REST{Token: token}
+	apps := map[string]*app.App{} // channel id → app
+	var runners []*runner.Runner
+	for _, b := range cfg.Bindings {
+		if b.Paused {
+			continue
+		}
+		stateDir := cfg.StateDirFor(b.Name)
+		sess, resume, err := session.LoadOrCreate(stateDir)
+		if err != nil {
+			return fmt.Errorf("%s: session 狀態: %w", b.Name, err)
+		}
+		logger := log.New(os.Stderr, "["+b.Name+"] ", log.LstdFlags)
+		logger.Printf("session=%s resume=%v workdir=%s", sess.ID, resume, b.Workdir())
+
+		r := runner.New(runner.Config{
+			Bin:       cfg.ClaudeBin,
+			Workdir:   b.Workdir(),
+			SessionID: sess.ID,
+			Resume:    resume,
+			Model:     b.Model,
+			ExtraArgs: b.ClaudeArgs,
+		})
+		runners = append(runners, r)
+		a := &app.App{
+			StateDir:     stateDir,
+			ChannelID:    b.ChannelID,
+			AllowedUsers: b.Allowed(cfg),
+			QuoteReply:   b.QuoteReply,
+			Asker:        r,
+			Sender:       sender,
+			Logf:         logger.Printf,
+		}
+		if err := a.Init(); err != nil {
+			return fmt.Errorf("%s: %w", b.Name, err)
+		}
+		apps[b.ChannelID] = a
+		g.Go(func() error { return a.RunWorker(gctx) })
+		g.Go(func() error { return a.RunSender(gctx) })
+	}
+	if len(apps) == 0 {
+		return fmt.Errorf("沒有任何啟用中的 binding")
+	}
+
+	// 整個 bot 一條 Gateway 連線，依頻道 id 分派給對應的 binding
+	gw := &discord.Gateway{
+		Token:    token,
+		Channels: func(id string) bool { return apps[id] != nil },
+		OnMessage: func(ctx context.Context, m discord.Message) error {
+			return apps[m.ChannelID].OnMessage(ctx, m)
+		},
+	}
 	g.Go(func() error { return gw.Run(gctx) })
-	g.Go(func() error { return a.RunWorker(gctx) })
-	g.Go(func() error { return a.RunSender(gctx) })
 	err = g.Wait()
 
+	// 平行關閉所有 claude 程序
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = r.Close(closeCtx)
+	var cg errgroup.Group
+	for _, r := range runners {
+		cg.Go(func() error { return r.Close(closeCtx) })
+	}
+	_ = cg.Wait()
 	if ctx.Err() != nil {
 		log.Printf("muninn: 收到關機訊號，結束")
 		return nil
 	}
 	return err
-}
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }

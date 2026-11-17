@@ -7,19 +7,16 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"muninn/internal/discord"
 	"muninn/internal/queue"
 	"muninn/internal/runner"
+	"muninn/internal/session"
 )
 
 // InboxJob 是一則待交給 claude 的頻道訊息。
@@ -50,7 +47,7 @@ type Sender interface {
 	Send(ctx context.Context, channelID, text, replyTo string) error
 }
 
-// App 是單一頻道的 M1 管線。
+// App 是單一 binding（頻道）的管線。
 type App struct {
 	StateDir     string
 	ChannelID    string
@@ -133,11 +130,22 @@ func (a *App) RunWorker(ctx context.Context) error {
 			return err
 		}
 		start := time.Now()
-		rep, err := a.Asker.Ask(ctx, job.Content)
+		prompt := job.Content
+		// 剛接手舊 session：第一則訊息前面附上交接說明
+		handoff := session.TakeHandoff(a.StateDir)
+		if handoff != "" {
+			prompt = handoff + prompt
+		}
+		rep, err := a.Asker.Ask(ctx, prompt)
 		if ctx.Err() != nil {
 			return ctx.Err() // 關機中：job 留在 pending，下次啟動回放
 		}
 		text := rep.Text
+		if err == nil && handoff != "" {
+			if cerr := session.ClearHandoff(a.StateDir); cerr != nil {
+				a.logf("worker: 清除交接標記失敗: %v", cerr)
+			}
+		}
 		if err != nil {
 			text = fmt.Sprintf("⚠️ Muninn：claude 執行失敗：%v", err)
 		} else if rep.IsError {
@@ -197,40 +205,4 @@ func (a *App) drainLoop(ctx context.Context, wakeCh chan struct{}, q queue.Dir, 
 		case <-tick.C:
 		}
 	}
-}
-
-// Session 是持久化在 state/session.json 的 claude session 資訊。
-type Session struct {
-	ID      string `json:"session_id"`
-	Created string `json:"created_at"`
-}
-
-// LoadOrCreateSession 讀出既有 session（resume=true），沒有就產生新的 uuid 並寫檔。
-func LoadOrCreateSession(stateDir string) (s Session, resume bool, err error) {
-	p := filepath.Join(stateDir, "session.json")
-	if data, err := os.ReadFile(p); err == nil {
-		if json.Unmarshal(data, &s) == nil && s.ID != "" {
-			return s, true, nil
-		}
-	}
-	s = Session{ID: newUUID(), Created: time.Now().UTC().Format(time.RFC3339)}
-	data, _ := json.MarshalIndent(s, "", "  ")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		return s, false, err
-	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return s, false, err
-	}
-	return s, false, os.Rename(tmp, p)
-}
-
-// newUUID 產生 v4 uuid（claude --session-id 要求合法 uuid）。
-func newUUID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	h := fmt.Sprintf("%x", b)
-	return strings.Join([]string{h[0:8], h[8:12], h[12:16], h[16:20], h[20:32]}, "-")
 }

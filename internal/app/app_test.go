@@ -11,6 +11,7 @@ import (
 	"muninn/internal/discord"
 	"muninn/internal/queue"
 	"muninn/internal/runner"
+	"muninn/internal/session"
 )
 
 type fakeAsker struct {
@@ -129,18 +130,6 @@ func TestReplaysPendingInboxOnRestart(t *testing.T) {
 	}
 }
 
-func TestSessionPersisted(t *testing.T) {
-	dir := t.TempDir()
-	s1, resume, err := LoadOrCreateSession(dir)
-	if err != nil || resume || len(s1.ID) != 36 {
-		t.Fatalf("首次應新建 uuid：%+v resume=%v err=%v", s1, resume, err)
-	}
-	s2, resume, err := LoadOrCreateSession(dir)
-	if err != nil || !resume || s2.ID != s1.ID {
-		t.Fatalf("第二次應沿用並 resume：%+v resume=%v err=%v", s2, resume, err)
-	}
-}
-
 func TestJobIDSortsByTime(t *testing.T) {
 	a := jobID("2026-11-17T07:00:00.5Z", "999")
 	b := jobID("2026-11-17T07:00:01Z", "111")
@@ -162,5 +151,31 @@ func TestQuoteReplyOptIn(t *testing.T) {
 	waitFor(t, func() bool { return len(snd.snapshot()) == 1 })
 	if got := snd.snapshot()[0].replyTo; got != "m1" {
 		t.Fatalf("打開 QuoteReply 時應掛回覆引用，得到 %q", got)
+	}
+}
+
+func TestHandoffPrefixedOnceAfterAdopt(t *testing.T) {
+	dir := t.TempDir()
+	if err := session.Adopt(dir, session.Candidate{ID: "11111111-1111-4111-8111-111111111111", Path: "/x.jsonl"}, false); err != nil {
+		t.Fatal(err)
+	}
+	asker, snd := &fakeAsker{}, &fakeSender{}
+	a := newApp(t, dir, asker, snd, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.RunWorker(ctx)
+	go a.RunSender(ctx)
+	_ = a.OnMessage(ctx, discord.Message{ID: "m1", ChannelID: "c1", AuthorID: "u", Content: "第一則", CreatedAt: "2026-11-17T07:00:00Z"})
+	waitFor(t, func() bool { return len(snd.snapshot()) == 1 })
+	_ = a.OnMessage(ctx, discord.Message{ID: "m2", ChannelID: "c1", AuthorID: "u", Content: "第二則", CreatedAt: "2026-11-17T07:00:01Z"})
+	waitFor(t, func() bool { return len(snd.snapshot()) == 2 })
+
+	asker.mu.Lock()
+	defer asker.mu.Unlock()
+	if !strings.HasPrefix(asker.seen[0], "[Muninn 交接說明]") || !strings.HasSuffix(asker.seen[0], "第一則") {
+		t.Fatalf("接手後第一則應附交接說明：%q", asker.seen[0])
+	}
+	if asker.seen[1] != "第二則" {
+		t.Fatalf("交接說明只該附一次：%q", asker.seen[1])
 	}
 }

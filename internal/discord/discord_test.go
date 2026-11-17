@@ -122,7 +122,7 @@ func TestGatewayIdentifiesAndFiltersMessages(t *testing.T) {
 	)
 	got := make(chan Message, 4)
 	g := &Gateway{
-		Token: "tok", ChannelID: "c1",
+		Token: "tok", Channels: func(c string) bool { return c == "c1" },
 		OnMessage: func(_ context.Context, m Message) error { got <- m; return nil },
 		Dial:      func(context.Context, string) (Conn, error) { return conn, nil },
 		Logf:      func(string, ...any) {},

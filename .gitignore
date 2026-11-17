@@ -11,3 +11,6 @@
 
 # 編輯器雜物
 .DS_Store
+
+# 本機設定（含頻道 id、白名單）
+/muninn.json

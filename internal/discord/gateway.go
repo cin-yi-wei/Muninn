@@ -59,10 +59,10 @@ func (w wsConn) Write(ctx context.Context, data []byte) error {
 }
 func (w wsConn) Close() { _ = w.c.CloseNow() }
 
-// Gateway 連上 Discord Gateway，把指定頻道的人類訊息交給 OnMessage。
+// Gateway 連上 Discord Gateway（整個 bot 一條連線），把 Channels 接受的頻道的人類訊息交給 OnMessage。
 type Gateway struct {
 	Token     string
-	ChannelID string                                              // 只收這個頻道（M1 單頻道）
+	Channels  func(channelID string) bool                         // 回 true 才收這個頻道的訊息
 	OnMessage func(ctx context.Context, m Message) error          // 回傳錯誤會斷線重連
 	URL       string                                              // 選填，測試用
 	Dial      func(ctx context.Context, url string) (Conn, error) // 選填，測試用
@@ -247,7 +247,7 @@ func (g *Gateway) loop(ctx context.Context, conn Conn) error {
 				gotReady.Store(true)
 				g.logf("gateway: READY")
 			case "MESSAGE_CREATE":
-				m, ok := parseMessage(ev.D, g.ChannelID)
+				m, ok := parseMessage(ev.D, g.Channels)
 				if !ok {
 					continue
 				}
@@ -262,7 +262,7 @@ func (g *Gateway) loop(ctx context.Context, conn Conn) error {
 }
 
 // parseMessage 抽出 MESSAGE_CREATE 的欄位；非目標頻道、bot / webhook 訊息、空內容都略過。
-func parseMessage(raw json.RawMessage, channelID string) (Message, bool) {
+func parseMessage(raw json.RawMessage, accept func(string) bool) (Message, bool) {
 	var d struct {
 		ID        string `json:"id"`
 		ChannelID string `json:"channel_id"`
@@ -277,7 +277,7 @@ func parseMessage(raw json.RawMessage, channelID string) (Message, bool) {
 	if json.Unmarshal(raw, &d) != nil {
 		return Message{}, false
 	}
-	if d.ChannelID != channelID || d.Author.Bot || d.WebhookID != "" || d.Content == "" {
+	if accept == nil || !accept(d.ChannelID) || d.Author.Bot || d.WebhookID != "" || d.Content == "" {
 		return Message{}, false
 	}
 	return Message{ID: d.ID, ChannelID: d.ChannelID, AuthorID: d.Author.ID, Content: d.Content, CreatedAt: d.Timestamp}, true

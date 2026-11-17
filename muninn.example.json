@@ -1,0 +1,25 @@
+{
+  "state_dir": "~/.local/state/muninn",
+  "token_env": "DISCORD_BOT_TOKEN",
+  "allowed_users": ["<你的 Discord user id>"],
+  "bindings": [
+    {
+      "name": "muninn-main",
+      "channel_id": "<頻道 id>",
+      "repo": "~/project/muninn",
+      "branch": "main",
+      "worktree": "~/project/muninn-main",
+      "claude_args": ["--permission-mode", "acceptEdits"]
+    },
+    {
+      "name": "some-feature",
+      "channel_id": "<另一個頻道 id>",
+      "repo": "~/project/some-repo",
+      "branch": "feature-x",
+      "base": "main",
+      "worktree": "~/project/some-repo-feature-x",
+      "model": "claude-sonnet-5-5",
+      "paused": true
+    }
+  ]
+}
