@@ -80,6 +80,15 @@ func (r *REST) do(ctx context.Context, method, path string, body any) ([]byte, e
 		req.Header.Set("User-Agent", "DiscordBot (muninn, 0.1)")
 		resp, err := r.client().Do(req)
 		if err != nil {
+			// 網路瞬斷：短暫退避重試幾次（250ms、500ms、1s）
+			if attempt < 3 && ctx.Err() == nil {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(250<<attempt) * time.Millisecond):
+				}
+				continue
+			}
 			return nil, err
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))

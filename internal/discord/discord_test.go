@@ -283,3 +283,69 @@ func TestFetchAndSendFile(t *testing.T) {
 		t.Fatal("超過上限應拒絕")
 	}
 }
+
+func TestGatewayResumesAfterReconnect(t *testing.T) {
+	conns := []*fakeConn{
+		newFakeConn(`{"op":10,"d":{"heartbeat_interval":45000}}`,
+			`{"op":0,"t":"READY","s":1,"d":{"session_id":"S1","resume_gateway_url":"wss://resume.example"}}`,
+			`{"op":0,"t":"MESSAGE_CREATE","s":5,"d":{"id":"1","channel_id":"c1","content":"a","author":{"id":"u"}}}`,
+			`{"op":7}`),
+		newFakeConn(`{"op":10,"d":{"heartbeat_interval":45000}}`, `{"op":0,"t":"RESUMED","s":6}`, `{"op":9,"d":false}`),
+		newFakeConn(`{"op":10,"d":{"heartbeat_interval":45000}}`),
+	}
+	var mu sync.Mutex
+	var urls []string
+	i := 0
+	g := &Gateway{
+		Token: "tok", Channels: func(string) bool { return true },
+		OnMessage: func(context.Context, Message) error { return nil },
+		Logf:      func(string, ...any) {},
+		Dial: func(_ context.Context, url string) (Conn, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			urls = append(urls, url)
+			if i >= len(conns) {
+				return nil, errors.New("no more")
+			}
+			c := conns[i]
+			i++
+			return c, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = g.Run(ctx); close(done) }()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		conns[2].mu.Lock()
+		n := len(conns[2].writes)
+		conns[2].mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	opOf := func(c *fakeConn) (int, map[string]any) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		var f struct {
+			Op int            `json:"op"`
+			D  map[string]any `json:"d"`
+		}
+		_ = json.Unmarshal(c.writes[0], &f)
+		return f.Op, f.D
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(urls) < 3 || urls[1] != "wss://resume.example/?v=10&encoding=json" {
+		t.Fatalf("第二次應連到 resume 網址：%v", urls)
+	}
+	if op, d := opOf(conns[1]); op != 6 || d["session_id"] != "S1" || d["seq"].(float64) != 5 {
+		t.Fatalf("重連應送 RESUME 帶 session 與 seq：%d %v", op, d)
+	}
+	if op, _ := opOf(conns[2]); op != 2 || strings.Contains(urls[2], "resume.example") {
+		t.Fatalf("session 失效後應回預設網址重新 IDENTIFY：%d %v", op, urls)
+	}
+}

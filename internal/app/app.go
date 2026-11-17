@@ -42,7 +42,12 @@ type OutboxJob struct {
 	ChannelID string `json:"channel_id"`
 	ReplyTo   string `json:"reply_to,omitempty"`
 	Text      string `json:"text"`
+	// Attempts 是送出失敗的次數；超過上限就放棄，不讓一則壞掉的回覆卡住後面所有回覆
+	Attempts int `json:"attempts,omitempty"`
 }
+
+// maxSendAttempts：同一則回覆最多送幾次（每輪間隔約 2 秒，涵蓋短暫斷線；永久錯誤也不會卡太久）。
+const maxSendAttempts = 15
 
 // Asker 是 runner 的介面，抽出來方便測試。
 type Asker interface {
@@ -276,6 +281,16 @@ func (a *App) RunSender(ctx context.Context) error {
 			return err
 		}
 		if err := a.Sender.Send(ctx, job.ChannelID, job.Text, job.ReplyTo); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			job.Attempts++
+			if job.Attempts >= maxSendAttempts {
+				a.logf("sender: %s 送了 %d 次都失敗，放棄（內容保留在 outbox/done）：%v", id, job.Attempts, err)
+				_ = a.outbox.Update(id, job)
+				return a.outbox.Done(id)
+			}
+			_ = a.outbox.Update(id, job)
 			return err
 		}
 		a.logf("sender: %s 已送出", id)

@@ -34,7 +34,10 @@ func (f *fakeAdmin) SetPaused(n string, p bool) (string, error) {
 	f.rec(fmt.Sprintf("pause %s %v", n, p))
 	return "ok pause", nil
 }
-func (f *fakeAdmin) Set(n, k, v string) (string, error) { f.rec("set " + n + " " + k + "=" + v); return "ok set", nil }
+func (f *fakeAdmin) Set(n, k, v string) (string, error) {
+	f.rec("set " + n + " " + k + "=" + v)
+	return "ok set", nil
+}
 
 func (f *fakeAdmin) snapshot() []string {
 	f.mu.Lock()

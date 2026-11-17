@@ -132,6 +132,17 @@ claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出
   訊息留在佇列（不算嘗試次數），每 5 分鐘重試；恢復後通知並接著處理。
 - Muninn 主程序本身建議用 systemd 跑，並設 `Restart=on-failure`、`MemoryMax=`。
 
+## 建置、安裝、檢查
+
+```sh
+make install                  # 跑測試、建置（帶版本號）、安裝到 ~/.local/bin/muninn
+systemctl --user restart muninn
+muninn version
+muninn -config ~/.config/muninn/muninn.json check   # 設定 + 環境檢查（claude、git、token、登入、狀態目錄），不連線
+```
+
+服務跑的是安裝好的 `~/.local/bin/muninn`，在 repo 裡改程式、重編不會影響正在跑的服務。
+
 測試：
 
 ```sh

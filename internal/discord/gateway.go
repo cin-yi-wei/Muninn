@@ -4,8 +4,10 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +21,7 @@ const (
 	opDispatch     = 0
 	opHeartbeat    = 1
 	opIdentify     = 2
+	opResume       = 6
 	opReconnect    = 7
 	opInvalid      = 9
 	opHello        = 10
@@ -96,16 +99,21 @@ func (g *Gateway) Run(ctx context.Context) error {
 		}
 	}
 	backoff := time.Second
+	var sess *resumeState
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		conn, err := dial(ctx, url)
+		target := url
+		if sess != nil && sess.url != "" {
+			target = sess.url // RESUME 要連到 READY 給的 resume_gateway_url
+		}
+		conn, err := dial(ctx, target)
 		if err != nil {
 			g.logf("gateway: 連線失敗: %v（%s 後重試）", err, backoff)
 		} else {
 			start := time.Now()
-			err = g.loop(ctx, conn)
+			sess, err = g.loop(ctx, conn, sess)
 			conn.Close()
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -133,8 +141,42 @@ type envelope struct {
 	T  string          `json:"t"`
 }
 
-// loop 跑一條連線：HELLO → IDENTIFY → 心跳 + 分派事件。
-func (g *Gateway) loop(ctx context.Context, conn Conn) error {
+// resumeState 是斷線後可以 RESUME 的狀態：session id、續接網址、最後一個事件序號。
+// RESUME 成功時 Discord 會補送斷線期間的事件，不會漏訊息。
+type resumeState struct {
+	id  string
+	url string
+	seq int64
+}
+
+// withQuery 確保 resume 網址帶 ?v=10&encoding=json（READY 給的網址沒有，少了會被判 session 失效）。
+func withQuery(u string) string {
+	if strings.Contains(u, "?") {
+		return u
+	}
+	return strings.TrimRight(u, "/") + "/?v=10&encoding=json"
+}
+
+// loop 跑一條連線：HELLO → IDENTIFY（或 RESUME）→ 心跳 + 分派事件。
+// 回傳下次可以用的續接狀態（nil 表示下次要重新 IDENTIFY）。
+func (g *Gateway) loop(ctx context.Context, conn Conn, prev *resumeState) (*resumeState, error) {
+	st := &resumeState{seq: -1}
+	if prev != nil {
+		*st = *prev
+	}
+	err := g.session(ctx, conn, prev, st)
+	if errors.Is(err, errInvalidSession) {
+		return nil, err // session 失效：下次重新 IDENTIFY
+	}
+	if st.id == "" || st.url == "" {
+		return nil, err
+	}
+	return st, err
+}
+
+var errInvalidSession = errors.New("session 失效")
+
+func (g *Gateway) session(ctx context.Context, conn Conn, prev *resumeState, st *resumeState) error {
 	first, err := conn.Read(ctx)
 	if err != nil {
 		return err
@@ -155,14 +197,19 @@ func (g *Gateway) loop(ctx context.Context, conn Conn) error {
 		interval = 30 * time.Second
 	}
 
-	if err := writeJSON(ctx, conn, map[string]any{
+	hs := map[string]any{
 		"op": opIdentify,
 		"d": map[string]any{
 			"token":      g.Token,
 			"intents":    intents,
 			"properties": map[string]string{"os": "linux", "browser": "muninn", "device": "muninn"},
 		},
-	}); err != nil {
+	}
+	if prev != nil && prev.id != "" {
+		hs = map[string]any{"op": opResume, "d": map[string]any{"token": g.Token, "session_id": prev.id, "seq": prev.seq}}
+		g.logf("gateway: 嘗試 RESUME（seq %d）", prev.seq)
+	}
+	if err := writeJSON(ctx, conn, hs); err != nil {
 		return err
 	}
 
@@ -170,7 +217,7 @@ func (g *Gateway) loop(ctx context.Context, conn Conn) error {
 	defer cancel()
 
 	var seq atomic.Int64
-	seq.Store(-1)
+	seq.Store(st.seq)
 	var missedAcks atomic.Int32
 	var gotReady atomic.Bool
 
@@ -222,6 +269,7 @@ func (g *Gateway) loop(ctx context.Context, conn Conn) error {
 		}
 		if ev.S != nil {
 			seq.Store(*ev.S)
+			st.seq = *ev.S
 		}
 		switch ev.Op {
 		case opHeartbeatACK:
@@ -238,12 +286,23 @@ func (g *Gateway) loop(ctx context.Context, conn Conn) error {
 		case opReconnect:
 			return fmt.Errorf("伺服器要求重連")
 		case opInvalid:
-			return fmt.Errorf("session 失效")
+			// d=true 表示可以 RESUME，但保守起見一律重新 IDENTIFY
+			return errInvalidSession
 		case opDispatch:
 			switch ev.T {
 			case "READY":
+				var rd struct {
+					SessionID        string `json:"session_id"`
+					ResumeGatewayURL string `json:"resume_gateway_url"`
+				}
+				if json.Unmarshal(ev.D, &rd) == nil && rd.SessionID != "" {
+					st.id, st.url = rd.SessionID, withQuery(rd.ResumeGatewayURL)
+				}
 				gotReady.Store(true)
 				g.logf("gateway: READY")
+			case "RESUMED":
+				gotReady.Store(true)
+				g.logf("gateway: RESUMED（補收斷線期間的事件）")
 			case "INTERACTION_CREATE":
 				if it, ok := parseInteraction(ev.D, g.Channels); ok && g.OnInteraction != nil {
 					// 另開 goroutine：處理可能要打 HTTP，不能卡住讀取迴圈和心跳

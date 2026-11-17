@@ -218,3 +218,18 @@ func TestInitRequiresPrompter(t *testing.T) {
 		t.Fatal("沒設 Prompter 應在啟動時就報錯")
 	}
 }
+
+func TestSenderGivesUpOnPermanentFailure(t *testing.T) {
+	dir := t.TempDir()
+	snd := &fakeSender{fails: 1000}
+	a := newApp(t, dir, &fakeAsker{}, snd, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// 直接放一則回覆在 outbox，並把嘗試次數設到快到上限
+	_ = a.outbox.Put("x1", OutboxJob{ID: "x1", ChannelID: "c1", Text: "壞掉", Attempts: maxSendAttempts - 2})
+	go a.RunSender(ctx)
+	waitFor(t, func() bool {
+		ids, _ := a.outbox.Pending()
+		return len(ids) == 0
+	})
+}

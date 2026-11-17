@@ -3,7 +3,8 @@
 // 用法：
 //
 //	muninn [-config muninn.json] run                       啟動所有 binding
-//	muninn [-config muninn.json] check                     驗證設定並確認 worktree，不連 Discord
+//	muninn [-config muninn.json] check                     驗證設定、確認 worktree、檢查環境（claude、git、token、登入），不連線
+//	muninn version
 //	muninn [-config muninn.json] adopt [--force] <binding> 接手該 worktree 最近的既有 claude session
 //	muninn [-config muninn.json] list                      列出所有頻道
 //	muninn [-config muninn.json] bind <名稱> --repo R [--branch B] [--channel ID | --create-channel | --telegram ID]
@@ -24,6 +25,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,7 +46,7 @@ func main() {
 	}
 	cfgPath := flag.String("config", def, "設定檔路徑")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "用法: muninn [-config 檔案] run | check | adopt [--force] <binding> | list | bind | unbind | pause | resume | set | schedules\n")
+		fmt.Fprintf(os.Stderr, "用法: muninn [-config 檔案] run | check | adopt [--force] <binding> | version | list | bind | unbind | pause | resume | set | schedules\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -53,6 +55,9 @@ func main() {
 	switch flag.Arg(0) {
 	case "run":
 		err = cmdRun(*cfgPath)
+	case "version":
+		fmt.Println("muninn " + version)
+		return
 	case "check":
 		err = cmdCheck(*cfgPath)
 	case "adopt":
@@ -109,6 +114,77 @@ func cmdCheck(cfgPath string) error {
 		fmt.Printf("%-20s 頻道 %s  工作目錄 %s  分支 %q  暫停=%v  %s\n", b.Name, b.ChannelID, b.Workdir(), b.Branch, b.Paused, st)
 	}
 	fmt.Printf("設定 OK，共 %d 個 binding\n", len(cfg.Bindings))
+	return checkEnv(cfg)
+}
+
+// version 由建置時注入：go build -ldflags "-X main.version=$(git describe --always --dirty)"
+var version = "dev"
+
+// checkEnv 檢查執行環境（兼 doctor）：工具在不在 PATH、token 有沒有設、claude 有沒有登入、狀態目錄能不能寫。
+// 有問題時列出來並回傳錯誤（不會實際呼叫 claude，不耗額度）。
+func checkEnv(cfg registry.Config) error {
+	var problems []string
+	ok := func(format string, args ...any) { fmt.Printf("✅ "+format+"\n", args...) }
+	bad := func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		problems = append(problems, msg)
+		fmt.Println("❌ " + msg)
+	}
+	bin := cfg.ClaudeBin
+	if bin == "" {
+		bin = "claude"
+	}
+	if p, err := exec.LookPath(bin); err != nil {
+		bad("找不到 claude 執行檔（%s）", bin)
+	} else if out, err := exec.Command(p, "--version").Output(); err != nil {
+		bad("claude --version 失敗：%v", err)
+	} else {
+		ok("claude %s（%s）", strings.TrimSpace(string(out)), p)
+	}
+	if p, err := exec.LookPath("git"); err != nil {
+		bad("找不到 git")
+	} else {
+		ok("git（%s）", p)
+	}
+	need := map[string]string{}
+	for _, b := range cfg.Bindings {
+		if b.Platform == registry.PlatformTelegram {
+			need[cfg.TelegramTokenEnv] = "Telegram"
+		} else {
+			need[cfg.TokenEnv] = "Discord"
+		}
+	}
+	for env, plat := range need {
+		if os.Getenv(env) == "" {
+			bad("%s bot token 沒設定（環境變數 %s）", plat, env)
+		} else {
+			ok("%s bot token 已設定（%s）", plat, env)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		cred := filepath.Join(home, ".claude", ".credentials.json")
+		if os.Getenv("CLAUDE_CONFIG_DIR") != "" {
+			cred = filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".credentials.json")
+		}
+		if _, err := os.Stat(cred); err != nil && os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") == "" {
+			bad("看不到 claude 的登入資料（%s），請在這台機器執行 claude 並 /login", cred)
+		} else {
+			ok("claude 登入資料存在")
+		}
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
+		bad("狀態目錄無法建立：%v", err)
+	} else if f, err := os.CreateTemp(cfg.StateDir, ".check-*"); err != nil {
+		bad("狀態目錄不能寫：%v", err)
+	} else {
+		f.Close()
+		os.Remove(f.Name())
+		ok("狀態目錄可寫（%s）", cfg.StateDir)
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("環境有 %d 個問題", len(problems))
+	}
+	fmt.Println("環境 OK")
 	return nil
 }
 

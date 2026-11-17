@@ -1,7 +1,10 @@
 // Package chat 是各聊天平台（Discord、Telegram）共用的訊息型別，App 只認這些，不認平台。
 package chat
 
-import "unicode/utf8"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // Message 是一則從頻道收到的使用者訊息。
 type Message struct {
@@ -43,7 +46,44 @@ type Interaction struct {
 
 // SplitMessage 把文字切成每段最多 limit 個字元（以 rune 計）。
 // 優先在換行處切，其次空白，都沒有才硬切；不會切斷 UTF-8 字元。
+// 切點落在 ``` 程式碼區塊中間時，前一段補上收尾、下一段重新開頭（保留語言標記），兩段都能正常顯示。
 func SplitMessage(text string, limit int) []string {
+	if limit > 40 {
+		parts := splitRaw(text, limit-20) // 留空間給補上的圍欄
+		return fixFences(parts)
+	}
+	return splitRaw(text, limit)
+}
+
+// fixFences 讓每一段的 ``` 都成對。
+func fixFences(parts []string) []string {
+	open := "" // 目前未關閉的圍欄開頭（例如 "```go"），空字串表示不在區塊內
+	for i, p := range parts {
+		prefix := ""
+		if open != "" {
+			prefix = open + "\n" // 上一段沒關的區塊，在這段重新開頭
+		}
+		// 逐行追蹤圍欄狀態（只看原本的內容，補上的開頭不算）
+		for _, line := range strings.Split(p, "\n") {
+			t := strings.TrimSpace(line)
+			if strings.HasPrefix(t, "```") {
+				if open == "" {
+					open = t
+				} else {
+					open = ""
+				}
+			}
+		}
+		p = prefix + p
+		if open != "" {
+			p += "\n```"
+		}
+		parts[i] = p
+	}
+	return parts
+}
+
+func splitRaw(text string, limit int) []string {
 	if text == "" {
 		return []string{"（空白回覆）"}
 	}
