@@ -144,6 +144,13 @@ claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出
 - 同時執行上限 `max_tasks`（預設 3，超過排隊），單一任務上限 `task_timeout`（預設 60m）。任務不能再委派。
 - 任務結束時移除 worktree（沒提交的改動先 wip commit），分支保留；Muninn 重啟時執行中的任務標成中斷並通知。
 
+## 其他 CLI
+
+- `muninn schedule add <頻道> <名稱> (--cron "0 9 * * 1-5" | --at "2026-11-18 09:00") --message "…"`、
+  `muninn schedule rm|pause|resume|run <頻道> <名稱>`：不透過 claude 直接管理定時任務
+- `muninn notify <頻道> <文字>`：從外部腳本或長時間背景工作在頻道貼一則訊息（不經過 claude）
+- 同一個 `state_dir` 只能有一個 Muninn 在跑，第二個會直接拒絕啟動
+
 ## 建置、安裝、檢查
 
 ```sh

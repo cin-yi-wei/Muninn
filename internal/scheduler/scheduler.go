@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -188,6 +189,7 @@ func (st *Store) save(list []Schedule) error {
 func (st *Store) List() ([]Schedule, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	defer st.flock()()
 	return st.load()
 }
 
@@ -203,6 +205,7 @@ func (st *Store) Add(s Schedule, replace bool, now time.Time) (Schedule, error) 
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	defer st.flock()()
 	list, err := st.load()
 	if err != nil {
 		return s, err
@@ -255,6 +258,7 @@ func (st *Store) Get(name string) (Schedule, error) {
 func (st *Store) update(name string, fn func(list []Schedule, i int) []Schedule) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	defer st.flock()()
 	list, err := st.load()
 	if err != nil {
 		return err
@@ -275,6 +279,7 @@ func (st *Store) update(name string, fn func(list []Schedule, i int) []Schedule)
 func (st *Store) RunOnce(now time.Time, inject Injector, logf func(string, ...any)) (int, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	defer st.flock()()
 	list, err := st.load()
 	if err != nil {
 		return 0, err
@@ -356,4 +361,21 @@ func Describe(s Schedule, defaultTZ string, now time.Time) string {
 		msg = append(msg[:40], '…')
 	}
 	return fmt.Sprintf("`%s` %s，下次 %s%s：%s", s.Name, when, next, status, string(msg))
+}
+
+// flock 取得 schedules.json 的跨程序鎖（CLI 與 daemon 會同時讀寫同一個檔），回傳解鎖函式。
+func (st *Store) flock() func() {
+	_ = os.MkdirAll(filepath.Dir(st.path), 0o755)
+	f, err := os.OpenFile(st.path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return func() {}
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return func() {}
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}
 }

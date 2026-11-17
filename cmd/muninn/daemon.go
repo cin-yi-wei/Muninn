@@ -80,6 +80,15 @@ func cmdRun(cfgPath string) error {
 	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
 		return err
 	}
+	// 同一個狀態目錄只能有一個 Muninn 在跑：兩個同時跑會搶同一批 session 和佇列
+	lock, err := os.OpenFile(filepath.Join(cfg.StateDir, "muninn.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("另一個 Muninn 已經在用 %s（同時只能跑一個）", cfg.StateDir)
+	}
 	token := os.Getenv(cfg.TokenEnv)
 	tgToken := os.Getenv(cfg.TelegramTokenEnv)
 	d := &daemon{

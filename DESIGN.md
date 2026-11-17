@@ -2,7 +2,7 @@
 
 > 重寫 claude_cron：拿掉 tmux，改用 headless `claude -p`。語言 Go。全新 repo。
 > 名字取自奧丁的記憶渡鴉 Muninn——每天飛出去打探、回來跟主人報告，正是 agent 派到各頻道跑完回報的畫面。（拆元件時「思想」渡鴉 Huginn 可留給另一半用。）
-> 狀態：M1～M5 全部完成（2026-11-17 實機驗過）。Discord 與 Telegram 同時運作。
+> 狀態：M1～M5 完成，並補齊稽核出的缺口（2026-11-17，見 §15）。Discord 與 Telegram 同時運作。
 
 ## 1. 為什麼重寫
 
@@ -122,3 +122,19 @@ claude_cron 開的 session 就是普通 claude session（`~/.claude/projects/<�
 - Telegram：long polling、inline 按鈕、Markdown→HTML（失敗退回純文字）、/status 與 /status@bot。私訊與群組都實機驗過（對話、權限按鈕、排程建立／觸發／刪除）。
   - 群組要在 BotFather 關隱私模式**並把 bot 重新加入群組**才收得到一般訊息。
   - 有 token 就輪詢；未綁定的聊天室傳訊息時，bot 回覆 chat id 與 user id，方便設定。
+
+## 15. 補齊缺口（2026-11-17，依 docs/gap-audit-2026-11-17.md）
+
+| 項目 | 做法（Muninn／headless 的重做方式） |
+|---|---|
+| 附件 | 收：Discord 附件、Telegram 照片／文件下載到 binding 的 attachments/，路徑附在訊息後，claude 用 Read 讀；送：send_file 工具 |
+| Telegram 重收 | getUpdates offset 存檔 |
+| 卡住 | supervisor 看 stream-json 最後事件時間，超過 stall_timeout 且沒在等權限確認就中斷 |
+| 登入失效 | 偵測 claude 的 "Not logged in · Please run /login"（實測輸出），通知一次、訊息留佇列、每 5 分鐘重試 |
+| 權限 | Muninn 自己判斷（與舊版相同規則）：危險 Bash、範圍外寫入、網路與 MCP 才問 |
+| 頻道管理 | 設定熱重載；CLI bind/unbind/pause/resume/set/list；控制頻道（!指令與 binding_* 工具）；自動建／刪 Discord 頻道 |
+| 可靠性 | Gateway RESUME、送訊息退避重試與放棄、程式碼區塊切段、單一實例鎖、check 兼 doctor、version、make install |
+| 委派 | delegate／task_* 工具：每任務獨立 worktree 與 session、角色與等級、權限轉委派者頻道、結果回委派者對話 |
+| 其他 | muninn notify、muninn schedule add/rm/pause/resume/run |
+
+刻意沒做：網頁管理後台（CLI＋控制頻道已涵蓋操作）、A2A 的 caller 認證／webhook／稽核 log（單機自用）。

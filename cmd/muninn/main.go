@@ -12,6 +12,9 @@
 //	muninn [-config muninn.json] pause|resume <名稱>
 //	muninn [-config muninn.json] set <名稱> <欄位>=<值>
 //	（以上都只改設定檔，正在跑的 Muninn 會自動套用）
+//	muninn [-config muninn.json] schedule add <頻道> <名稱> (--cron "0 9 * * 1-5" | --at "2026-11-18 09:00") --message "…"
+//	muninn [-config muninn.json] schedule rm|pause|resume|run <頻道> <名稱>
+//	muninn [-config muninn.json] notify <頻道> <文字>       從外部腳本在頻道貼一則訊息（給長時間背景工作通知用）
 //	muninn [-config muninn.json] schedules                 列出各頻道的定時任務（新增、修改由頻道裡的 claude 透過工具處理）
 //	muninn permission-mcp --socket S --binding B           （內部用）claude 啟動的權限確認 MCP server
 //
@@ -31,8 +34,10 @@ import (
 	"time"
 
 	"muninn/internal/admin"
+	"muninn/internal/app"
 	"muninn/internal/discord"
 	"muninn/internal/permission"
+	"muninn/internal/queue"
 	"muninn/internal/registry"
 	"muninn/internal/scheduler"
 	"muninn/internal/session"
@@ -46,7 +51,7 @@ func main() {
 	}
 	cfgPath := flag.String("config", def, "設定檔路徑")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "用法: muninn [-config 檔案] run | check | adopt [--force] <binding> | version | list | bind | unbind | pause | resume | set | schedules\n")
+		fmt.Fprintf(os.Stderr, "用法: muninn [-config 檔案] run | check | adopt [--force] <binding> | version | list | bind | unbind | pause | resume | set | schedules | schedule | notify\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -66,6 +71,10 @@ func main() {
 		err = cmdAdmin(*cfgPath, flag.Arg(0), flag.Args()[1:])
 	case "schedules":
 		err = cmdSchedules(*cfgPath)
+	case "schedule":
+		err = cmdSchedule(*cfgPath, flag.Args()[1:])
+	case "notify":
+		err = cmdNotify(*cfgPath, flag.Args()[1:])
 	case "permission-mcp":
 		err = cmdPermissionMCP(flag.Args()[1:])
 	default:
@@ -333,5 +342,99 @@ func cmdAdmin(cfgPath, sub string, args []string) error {
 		return err
 	}
 	fmt.Println(msg)
+	return nil
+}
+
+// cmdSchedule 讓人不透過 claude 直接管理定時任務（改 schedules.json，正在跑的 Muninn 30 秒內會看到）。
+func cmdSchedule(cfgPath string, args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("用法: muninn schedule add|rm|pause|resume|run <頻道> <名稱> …")
+	}
+	cfg, err := registry.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	sub, name, task := args[0], args[1], args[2]
+	b, ok := cfg.Find(name)
+	if !ok {
+		return fmt.Errorf("找不到頻道 %q", name)
+	}
+	st := scheduler.NewStore(cfg.StateDirFor(name), cfg.Timezone)
+	now := time.Now()
+	switch sub {
+	case "add":
+		fs := flag.NewFlagSet("schedule add", flag.ContinueOnError)
+		s := scheduler.Schedule{Name: task}
+		fs.StringVar(&s.Cron, "cron", "", "重複任務的 cron")
+		fs.StringVar(&s.At, "at", "", "單次任務的時間")
+		fs.StringVar(&s.Message, "message", "", "時間到時送進頻道的內容")
+		fs.StringVar(&s.Timezone, "timezone", "", "時區")
+		fs.BoolVar(&s.CatchUp, "catch-up", false, "錯過時補跑")
+		replace := fs.Bool("replace", false, "同名時覆蓋")
+		if err := fs.Parse(args[3:]); err != nil {
+			return err
+		}
+		added, err := st.Add(s, *replace, now)
+		if err != nil {
+			return err
+		}
+		fmt.Println("已建立：" + scheduler.Describe(added, cfg.Timezone, now))
+	case "rm":
+		if err := st.Remove(task); err != nil {
+			return err
+		}
+		fmt.Println("已刪除 " + task)
+	case "pause", "resume":
+		if err := st.SetPaused(task, sub == "pause", now); err != nil {
+			return err
+		}
+		fmt.Printf("已%s %s\n", map[string]string{"pause": "暫停", "resume": "恢復"}[sub], task)
+	case "run":
+		s, err := st.Get(task)
+		if err != nil {
+			return err
+		}
+		// 直接寫進那個頻道的 inbox，正在跑的 Muninn 幾秒內會處理
+		q := queue.Dir{Root: filepath.Join(cfg.StateDirFor(name), "inbox")}
+		if err := q.Init(); err != nil {
+			return err
+		}
+		id := now.UTC().Format("20060102T150405.000000000") + "-cli-" + task
+		job := app.InboxJob{ID: id, ChannelID: b.ChannelID, MessageID: "cli-" + task, AuthorID: app.SchedulerAuthor,
+			Content:   fmt.Sprintf("[Muninn 定時任務「%s」（手動觸發）]\n%s", task, s.Message),
+			CreatedAt: now.UTC().Format(time.RFC3339)}
+		if err := q.Put(id, job); err != nil {
+			return err
+		}
+		fmt.Println("已觸發 " + task + "（Muninn 有在跑的話幾秒內會處理）")
+	default:
+		return fmt.Errorf("不認得的子指令 %q", sub)
+	}
+	return nil
+}
+
+// cmdNotify 在頻道貼一則訊息：寫進那個頻道的 outbox，正在跑的 Muninn 幾秒內送出（不經過 claude）。
+func cmdNotify(cfgPath string, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("用法: muninn notify <頻道> <文字>")
+	}
+	cfg, err := registry.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	b, ok := cfg.Find(args[0])
+	if !ok {
+		return fmt.Errorf("找不到頻道 %q", args[0])
+	}
+	q := queue.Dir{Root: filepath.Join(cfg.StateDirFor(b.Name), "outbox")}
+	if err := q.Init(); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	id := now.Format("20060102T150405.000000000") + "-notify"
+	if err := q.Put(id, app.OutboxJob{ID: id, ChannelID: b.ChannelID, Text: strings.Join(args[1:], " ")}); err != nil {
+		return err
+	}
+	fmt.Println("已排入，Muninn 幾秒內送出")
 	return nil
 }
