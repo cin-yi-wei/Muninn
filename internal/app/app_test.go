@@ -211,3 +211,10 @@ func TestHandoffPrefixedOnceAfterAdopt(t *testing.T) {
 		t.Fatalf("交接說明只該附一次：%q", asker.seen[1])
 	}
 }
+
+func TestInitRequiresPrompter(t *testing.T) {
+	a := &App{StateDir: t.TempDir(), ChannelID: "c1", Asker: &fakeAsker{}, Sender: &fakeSender{}}
+	if err := a.Init(); err == nil {
+		t.Fatal("沒設 Prompter 應在啟動時就報錯")
+	}
+}

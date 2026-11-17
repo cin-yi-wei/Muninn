@@ -152,3 +152,27 @@ func TestMCPConfigShape(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+func TestBrokerSurvivesHandlerPanic(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "p.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	go func() {
+		_ = Serve(ctx, socket, func(context.Context, Request) Decision {
+			calls++
+			if calls == 1 {
+				var p *Request
+				_ = p.ToolName // 故意 nil panic
+			}
+			return Allow(nil)
+		})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if d := ask(ctx, socket, Request{ToolName: "Bash"}); d.Behavior != "deny" || !strings.Contains(d.Message, "內部錯誤") {
+		t.Fatalf("handler panic 應回拒絕：%+v", d)
+	}
+	if d := ask(ctx, socket, Request{ToolName: "Bash", Input: json.RawMessage(`{"a":1}`)}); d.Behavior != "allow" {
+		t.Fatalf("panic 之後 broker 應該還活著：%+v", d)
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -109,9 +110,20 @@ func handleConn(ctx context.Context, conn net.Conn, h Handler) {
 		_, _ = io.Copy(io.Discard, conn) // 對方關閉才會返回
 		cancel()
 	}()
-	d := h(cctx, req)
+	d := safeHandle(cctx, h, req)
 	out, _ := json.Marshal(d)
 	_, _ = conn.Write(append(out, '\n'))
+}
+
+// safeHandle 呼叫 handler；handler panic 時改回拒絕，不讓一則請求拖垮整個 Muninn。
+func safeHandle(ctx context.Context, h Handler, req Request) (d Decision) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "permission: handler panic（%s）: %v\n%s", req.ToolName, r, debug.Stack())
+			d = Deny(fmt.Sprintf("Muninn 權限服務內部錯誤，已拒絕：%v", r))
+		}
+	}()
+	return h(ctx, req)
 }
 
 // ---------- 子程序端：stdio MCP server ----------

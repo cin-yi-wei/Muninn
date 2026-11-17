@@ -81,6 +81,10 @@ func (a *App) Init() error {
 	a.outbox = queue.Dir{Root: filepath.Join(a.StateDir, "outbox")}
 	a.wakeWorker = make(chan struct{}, 1)
 	a.wakeSender = make(chan struct{}, 1)
+	// 啟動時就擋下漏接的依賴，不要等到第一個權限請求才 nil panic
+	if a.Asker == nil || a.Sender == nil || a.Prompter == nil {
+		return fmt.Errorf("app: Asker / Sender / Prompter 都必須設定")
+	}
 	if err := a.inbox.Init(); err != nil {
 		return err
 	}

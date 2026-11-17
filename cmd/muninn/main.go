@@ -203,6 +203,7 @@ func cmdRun(cfgPath string) error {
 			PermissionTimeout: cfg.PermTimeout(),
 			Asker:             r,
 			Sender:            sender,
+			Prompter:          sender,
 			Logf:              logger.Printf,
 		}
 		if err := a.Init(); err != nil {
