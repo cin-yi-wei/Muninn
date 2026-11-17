@@ -10,6 +10,18 @@ type Message struct {
 	AuthorID  string `json:"author_id"`
 	Content   string `json:"content"`
 	CreatedAt string `json:"created_at"`
+	// Attachments 是訊息附帶的檔案（只有參照，真正下載由 Fetcher 在處理時做）
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment 是一個附件的參照。不同平台用不同欄位定位檔案：
+// Discord 用 URL（CDN 簽名網址），Telegram 用 FileID（下載網址含 bot token，不能落地存檔）。
+type Attachment struct {
+	Name        string `json:"name"`
+	ContentType string `json:"content_type,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+	URL         string `json:"url,omitempty"`
+	FileID      string `json:"file_id,omitempty"`
 }
 
 // Button 是訊息底下的一顆按鈕。Style：1 藍紫、2 灰、3 綠、4 紅（Discord 的語意；不支援顏色的平台忽略）。

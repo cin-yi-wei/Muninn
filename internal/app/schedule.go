@@ -102,6 +102,9 @@ func toolErr(format string, args ...any) permission.ToolResult {
 
 // HandleTool 執行 claude 呼叫的頻道工具（schedule_*）。
 func (a *App) HandleTool(method string, input json.RawMessage) permission.ToolResult {
+	if method == "send_file" {
+		return a.sendFileTool(input)
+	}
 	if a.Schedules == nil {
 		return toolErr("這個頻道沒有啟用定時任務")
 	}

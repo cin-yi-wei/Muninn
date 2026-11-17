@@ -203,7 +203,12 @@ func cmdRun(cfgPath string) error {
 			"--append-system-prompt", permission.SystemPrompt,
 			// claude 內建的 Cron 工具只活在這個程序裡，閒置回收或重啟就消失，跟 Muninn 的排程搞混只會出事
 			"--disallowedTools", "CronCreate,CronDelete,CronList",
+			// 使用者傳來的附件下載在狀態目錄底下，要讓 claude 讀得到
+			"--add-dir", app.AttachmentsDir(stateDir),
 		}, b.ClaudeArgs...)
+		if err := os.MkdirAll(app.AttachmentsDir(stateDir), 0o755); err != nil {
+			return err
+		}
 		sid := sess.ID
 		r := runner.New(runner.Config{
 			SessionExists: func() bool { return session.Exists(claudeHome, sid) },
@@ -219,6 +224,7 @@ func cmdRun(cfgPath string) error {
 		var out interface {
 			app.Sender
 			app.Prompter
+			app.Files
 		} = sender
 		if b.Platform == registry.PlatformTelegram {
 			out = tg
@@ -233,6 +239,7 @@ func cmdRun(cfgPath string) error {
 			Asker:             r,
 			Sender:            out,
 			Prompter:          out,
+			Files:             out,
 			Ctl:               r,
 			SessionID:         sess.ID,
 			Schedules:         scheduler.NewStore(stateDir, cfg.Timezone),
@@ -276,8 +283,9 @@ func cmdRun(cfgPath string) error {
 		var tgMu sync.Mutex
 		told := map[string]bool{}
 		poller := &telegram.Poller{
-			Bot:   tg,
-			Chats: func(id string) bool { return tgApps[id] != nil },
+			Bot:        tg,
+			OffsetFile: filepath.Join(cfg.StateDir, "telegram_offset"),
+			Chats:      func(id string) bool { return tgApps[id] != nil },
 			OnMessage: func(ctx context.Context, m chat.Message) error {
 				return tgApps[m.ChannelID].OnMessage(ctx, m)
 			},

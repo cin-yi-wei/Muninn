@@ -3,8 +3,11 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -225,5 +228,88 @@ func TestTokenNotLeakedInErrors(t *testing.T) {
 	err := b.call(context.Background(), "getMe", map[string]any{}, nil)
 	if err == nil || strings.Contains(err.Error(), "SECRET123") {
 		t.Fatalf("錯誤訊息不能帶 token：%v", err)
+	}
+}
+
+func TestPhotoDocumentAndOffsetFile(t *testing.T) {
+	f := &fakeAPI{updates: [][]any{{
+		map[string]any{"update_id": 50, "message": map[string]any{"message_id": 5, "date": 1795000000, "caption": "看這張",
+			"photo": []any{map[string]any{"file_id": "small", "file_size": 10}, map[string]any{"file_id": "big", "file_size": 999}},
+			"chat":  map[string]any{"id": 1}, "from": map[string]any{"id": 42}}},
+		map[string]any{"update_id": 51, "message": map[string]any{"message_id": 6, "date": 1795000000,
+			"document": map[string]any{"file_id": "doc", "file_name": "a.pdf", "mime_type": "application/pdf", "file_size": 5},
+			"chat":     map[string]any{"id": 1}, "from": map[string]any{"id": 42}}},
+	}}}
+	b := newBot(t, f)
+	offsetFile := filepath.Join(t.TempDir(), "offset")
+	_ = os.WriteFile(offsetFile, []byte("50\n"), 0o644) // 上次存到 50：從 50 繼續
+	msgs := make(chan chat.Message, 4)
+	p := &Poller{Bot: b, PollTimeout: time.Second, OffsetFile: offsetFile,
+		Chats:     func(string) bool { return true },
+		OnMessage: func(_ context.Context, m chat.Message) error { msgs <- m; return nil }}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+	m1, m2 := <-msgs, <-msgs
+	if m1.Content != "看這張" || len(m1.Attachments) != 1 || m1.Attachments[0].FileID != "big" {
+		t.Fatalf("照片應取最大尺寸、caption 當文字：%+v", m1)
+	}
+	if m2.Content != "" || m2.Attachments[0].Name != "a.pdf" || m2.Attachments[0].ContentType != "application/pdf" {
+		t.Fatalf("只有檔案的訊息也要收：%+v", m2)
+	}
+	first := f.snapshot()[0]
+	if first.method != "getUpdates" || first.params["offset"].(float64) != 50 {
+		t.Fatalf("應從存檔的 offset 開始：%v", first.params)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, _ := os.ReadFile(offsetFile); strings.TrimSpace(string(b)) == "52" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	b2, _ := os.ReadFile(offsetFile)
+	t.Fatalf("處理完應存 offset 52，實際 %q", b2)
+}
+
+func TestFetchAndSendFile(t *testing.T) {
+	var method, field, name, data string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getFile"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_path":"photos/x.jpg"}}`))
+		case r.URL.Path == "/file/botTOKEN/photos/x.jpg":
+			_, _ = w.Write([]byte("JPEG"))
+		default:
+			method = r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			_ = r.ParseMultipartForm(1 << 20)
+			for k := range r.MultipartForm.File {
+				field = k
+				f, h, _ := r.FormFile(k)
+				b, _ := io.ReadAll(f)
+				name, data = h.Filename, string(b)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+		}
+	}))
+	defer srv.Close()
+	b := &Bot{Token: "TOKEN", APIBase: srv.URL}
+	rc, err := b.Fetch(context.Background(), chat.Attachment{FileID: "big"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "JPEG" {
+		t.Fatal(string(got))
+	}
+	if _, err := b.Fetch(context.Background(), chat.Attachment{FileID: "x", Size: MaxDownloadBytes + 1}); err == nil {
+		t.Fatal("超過 20MB 應拒絕")
+	}
+	if err := b.SendFile(context.Background(), "1", "chart.png", []byte("PNG"), "圖"); err != nil || method != "sendPhoto" || field != "photo" || name != "chart.png" || data != "PNG" {
+		t.Fatalf("圖片應用 sendPhoto：%v %s %s %s", err, method, field, name)
+	}
+	if err := b.SendFile(context.Background(), "1", "a.zip", []byte("Z"), ""); err != nil || method != "sendDocument" || field != "document" {
+		t.Fatalf("其他檔案應用 sendDocument：%v %s", err, method)
 	}
 }

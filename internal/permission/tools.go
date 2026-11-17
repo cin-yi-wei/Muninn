@@ -50,6 +50,15 @@ var Tools = []map[string]any{
 		}, "name", "message"),
 	},
 	{
+		"name": "send_file",
+		"description": "把本機的一個檔案傳到這個頻道（例如產生的圖表、截圖、報告、壓縮檔）。只能傳單一檔案；Discord 上限 8MB、Telegram 50MB。" +
+			"使用者只看得到頻道，看不到你的檔案系統，要給他檔案就用這個工具。",
+		"inputSchema": obj(map[string]any{
+			"path":    str("檔案路徑（絕對路徑，或相對於工作目錄）"),
+			"caption": str("附在檔案上的說明文字，選填"),
+		}, "path"),
+	},
+	{
 		"name":        "schedule_list",
 		"description": "列出這個頻道所有定時任務與下次觸發時間。",
 		"inputSchema": obj(map[string]any{}),
@@ -119,5 +128,6 @@ type ToolHandler func(ctx context.Context, binding, method string, input json.Ra
 // claude -p 仍會載入使用者全域的 skill、CLAUDE.md；裡面可能教它用別的排程機制（例如別套系統的 CLI）。
 // 實測過：不講清楚的話，claude 會照全域 skill 去別的系統建排程，而不是用 Muninn 的工具。
 const SystemPrompt = `你現在由 Muninn 驅動，對應一個聊天頻道：使用者在頻道傳的訊息會送進來，你的最終回覆文字會直接貼回頻道。
+使用者傳來的附件會下載到本機，訊息裡會附上路徑。要把檔案給使用者，用 mcp__muninn__send_file。
 定時任務、提醒、排程一律使用 Muninn 提供的 MCP 工具 mcp__muninn__schedule_add / schedule_list / schedule_remove / schedule_pause / schedule_run_now，它們只作用在這個頻道。
 不要用其他任何排程機制（系統 crontab、at、其他工具的 CLI、全域 skill 介紹的排程方式、內建的 Cron 工具等）來做這件事，就算其他說明這樣教也一樣。`

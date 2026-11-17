@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"muninn/internal/chat"
 )
 
 func TestSplitMessage(t *testing.T) {
@@ -228,5 +230,56 @@ func TestRESTPromptEditAndInteraction(t *testing.T) {
 	}
 	if calls[3].body["data"].(map[string]any)["flags"].(float64) != 64 {
 		t.Fatalf("ephemeral 應帶 flags 64：%+v", calls[3])
+	}
+}
+
+func TestParseMessageAttachments(t *testing.T) {
+	accept := func(c string) bool { return c == "c1" }
+	only := `{"id":"9","channel_id":"c1","content":"","author":{"id":"u"},"attachments":[{"filename":"a.png","url":"https://cdn/a.png","content_type":"image/png","size":123}]}`
+	m, ok := parseMessage(json.RawMessage(only), accept)
+	if !ok || len(m.Attachments) != 1 || m.Attachments[0].URL != "https://cdn/a.png" || m.Attachments[0].Size != 123 {
+		t.Fatalf("只有附件的訊息也要收：%+v %v", m, ok)
+	}
+	if _, ok := parseMessage(json.RawMessage(`{"id":"9","channel_id":"c1","content":"","author":{"id":"u"}}`), accept); ok {
+		t.Fatal("沒文字也沒附件應略過")
+	}
+}
+
+func TestFetchAndSendFile(t *testing.T) {
+	var gotPayload, gotFile string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = io.WriteString(w, "PNGDATA")
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		gotPayload = r.FormValue("payload_json")
+		f, h, _ := r.FormFile("files[0]")
+		b, _ := io.ReadAll(f)
+		gotFile = h.Filename + ":" + string(b)
+		_, _ = io.WriteString(w, `{"id":"1"}`)
+	}))
+	defer srv.Close()
+	rest := &REST{Token: "tok", APIBase: srv.URL}
+	rc, err := rest.Fetch(context.Background(), chat.Attachment{URL: srv.URL + "/a.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(b) != "PNGDATA" {
+		t.Fatal(string(b))
+	}
+	if err := rest.SendFile(context.Background(), "c1", "report.txt", []byte("hello"), "報告"); err != nil {
+		t.Fatal(err)
+	}
+	if gotFile != "report.txt:hello" || !strings.Contains(gotPayload, `"content":"報告"`) {
+		t.Fatalf("multipart 不對：%s %s", gotFile, gotPayload)
+	}
+	if err := rest.SendFile(context.Background(), "c1", "big", make([]byte, MaxUploadBytes+1), ""); err == nil {
+		t.Fatal("超過上限應拒絕")
 	}
 }

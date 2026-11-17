@@ -13,7 +13,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -230,7 +233,18 @@ type update struct {
 		Date      int64  `json:"date"`
 		Text      string `json:"text"`
 		Caption   string `json:"caption"`
-		Chat      struct {
+		Photo     []struct {
+			FileID   string `json:"file_id"`
+			FileSize int64  `json:"file_size"`
+			Width    int    `json:"width"`
+		} `json:"photo"`
+		Document *struct {
+			FileID   string `json:"file_id"`
+			FileName string `json:"file_name"`
+			MimeType string `json:"mime_type"`
+			FileSize int64  `json:"file_size"`
+		} `json:"document"`
+		Chat struct {
 			ID int64 `json:"id"`
 		} `json:"chat"`
 		From *struct {
@@ -263,6 +277,34 @@ type Poller struct {
 	OnUnknown func(ctx context.Context, m chat.Message)
 	// PollTimeout 是每次 getUpdates 最多等多久，預設 50 秒（測試可調短）
 	PollTimeout time.Duration
+	// OffsetFile 選填：把已處理到的 update 位置存檔。沒存的話重啟後 Telegram 會重送
+	// 24 小時內還沒確認的訊息，可能被重複執行。
+	OffsetFile string
+}
+
+func (p *Poller) loadOffset() int64 {
+	if p.OffsetFile == "" {
+		return 0
+	}
+	b, err := os.ReadFile(p.OffsetFile)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	return n
+}
+
+func (p *Poller) saveOffset(n int64) {
+	if p.OffsetFile == "" {
+		return
+	}
+	tmp := p.OffsetFile + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(n, 10)+"\n"), 0o644); err == nil {
+		err = os.Rename(tmp, p.OffsetFile)
+		if err != nil {
+			p.Bot.logf("telegram: 存 offset 失敗: %v", err)
+		}
+	}
 }
 
 // Run 持續收訊息直到 ctx 取消；網路錯誤會退避重試。
@@ -271,7 +313,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	if timeout <= 0 {
 		timeout = 50 * time.Second
 	}
-	var offset int64
+	offset := p.loadOffset()
 	backoff := time.Second
 	for {
 		if err := ctx.Err(); err != nil {
@@ -312,6 +354,10 @@ func (p *Poller) Run(ctx context.Context) error {
 				p.Bot.logf("telegram: 處理 update %d 失敗: %v", u.UpdateID, err)
 			}
 		}
+		if len(updates) > 0 {
+			// 訊息已寫進各 binding 的 inbox（檔案佇列）才存 offset：中途崩潰頂多重收一次，由 inbox 去重
+			p.saveOffset(offset)
+		}
 	}
 }
 
@@ -322,15 +368,30 @@ func (p *Poller) handle(ctx context.Context, u update) error {
 			text = m.Caption
 		}
 		chatID := strconv.FormatInt(m.Chat.ID, 10)
-		if text == "" || m.From == nil || m.From.IsBot {
+		var atts []chat.Attachment
+		if len(m.Photo) > 0 {
+			// Telegram 同一張照片給好幾種尺寸，取最大的（陣列最後一個）
+			ph := m.Photo[len(m.Photo)-1]
+			atts = append(atts, chat.Attachment{Name: fmt.Sprintf("photo_%d.jpg", m.MessageID), ContentType: "image/jpeg", Size: ph.FileSize, FileID: ph.FileID})
+		}
+		if d := m.Document; d != nil {
+			name := d.FileName
+			if name == "" {
+				name = fmt.Sprintf("file_%d", m.MessageID)
+			}
+			atts = append(atts, chat.Attachment{Name: name, ContentType: d.MimeType, Size: d.FileSize, FileID: d.FileID})
+		}
+		// 只有圖片或檔案、沒有文字的訊息也要收
+		if (text == "" && len(atts) == 0) || m.From == nil || m.From.IsBot {
 			return nil
 		}
 		msg := chat.Message{
-			ID:        strconv.FormatInt(m.MessageID, 10),
-			ChannelID: chatID,
-			AuthorID:  strconv.FormatInt(m.From.ID, 10),
-			Content:   text,
-			CreatedAt: time.Unix(m.Date, 0).UTC().Format(time.RFC3339),
+			ID:          strconv.FormatInt(m.MessageID, 10),
+			ChannelID:   chatID,
+			AuthorID:    strconv.FormatInt(m.From.ID, 10),
+			Content:     text,
+			CreatedAt:   time.Unix(m.Date, 0).UTC().Format(time.RFC3339),
+			Attachments: atts,
 		}
 		if p.Chats == nil || !p.Chats(chatID) {
 			if p.OnUnknown != nil {
@@ -357,6 +418,97 @@ func (p *Poller) handle(ctx context.Context, u update) error {
 			CustomID:  cq.Data,
 			MessageID: strconv.FormatInt(cq.Message.MessageID, 10),
 		})
+	}
+	return nil
+}
+
+// MaxDownloadBytes 是 Bot API 能下載的檔案上限（20MB）。
+const MaxDownloadBytes = 20 << 20
+
+// Fetch 下載附件：先 getFile 換出檔案路徑再下載。下載網址含 bot token，只在這裡用、不落地。
+func (b *Bot) Fetch(ctx context.Context, a chat.Attachment) (io.ReadCloser, error) {
+	if a.FileID == "" {
+		return nil, fmt.Errorf("telegram: 附件沒有 file_id")
+	}
+	if a.Size > MaxDownloadBytes {
+		return nil, fmt.Errorf("檔案 %d MB 超過 Telegram bot 下載上限 20 MB", a.Size>>20)
+	}
+	var f struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := b.call(ctx, "getFile", map[string]any{"file_id": a.FileID}, &f); err != nil {
+		return nil, err
+	}
+	base := b.APIBase
+	if base == "" {
+		base = defaultAPIBase
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/file/bot"+b.Token+"/"+f.FilePath, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: 下載附件失敗: %s", strings.ReplaceAll(err.Error(), b.Token, "<token>"))
+	}
+	if resp.StatusCode/100 != 2 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("telegram: 下載附件回 %d", resp.StatusCode)
+	}
+	return resp.Body, nil
+}
+
+// MaxUploadBytes 是 Bot API 上傳上限（50MB）。
+const MaxUploadBytes = 50 << 20
+
+// SendFile 上傳檔案：圖片用 sendPhoto（聊天室裡直接顯示），其他用 sendDocument。
+func (b *Bot) SendFile(ctx context.Context, chatID, name string, data []byte, caption string) error {
+	if len(data) > MaxUploadBytes {
+		return fmt.Errorf("檔案 %d MB 超過 Telegram 上限 50 MB", len(data)>>20)
+	}
+	method, field := "sendDocument", "document"
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".jpg", ".jpeg", ".png", ".webp":
+		if len(data) <= 10<<20 { // sendPhoto 上限 10MB
+			method, field = "sendPhoto", "photo"
+		}
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("chat_id", chatID)
+	if caption != "" {
+		if r := []rune(caption); len(r) > 1000 { // caption 上限 1024
+			caption = string(r[:1000]) + "…"
+		}
+		_ = mw.WriteField("caption", caption)
+	}
+	fw, err := mw.CreateFormFile(field, name)
+	if err != nil {
+		return err
+	}
+	_, _ = fw.Write(data)
+	_ = mw.Close()
+	base := b.APIBase
+	if base == "" {
+		base = defaultAPIBase
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/bot"+b.Token+"/"+method, &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := (&http.Client{Timeout: 3 * time.Minute}).Do(req)
+	if err != nil {
+		return fmt.Errorf("telegram: 上傳失敗: %s", strings.ReplaceAll(err.Error(), b.Token, "<token>"))
+	}
+	defer resp.Body.Close()
+	var env struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&env)
+	if !env.OK {
+		return fmt.Errorf("telegram: 上傳檔案失敗：%s", env.Description)
 	}
 	return nil
 }

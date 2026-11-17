@@ -276,14 +276,25 @@ func parseMessage(raw json.RawMessage, accept func(string) bool) (Message, bool)
 			ID  string `json:"id"`
 			Bot bool   `json:"bot"`
 		} `json:"author"`
+		Attachments []struct {
+			Filename    string `json:"filename"`
+			URL         string `json:"url"`
+			ContentType string `json:"content_type"`
+			Size        int64  `json:"size"`
+		} `json:"attachments"`
 	}
 	if json.Unmarshal(raw, &d) != nil {
 		return Message{}, false
 	}
-	if accept == nil || !accept(d.ChannelID) || d.Author.Bot || d.WebhookID != "" || d.Content == "" {
+	// 只有附件沒有文字的訊息（例如只貼一張截圖）也要收
+	if accept == nil || !accept(d.ChannelID) || d.Author.Bot || d.WebhookID != "" || (d.Content == "" && len(d.Attachments) == 0) {
 		return Message{}, false
 	}
-	return Message{ID: d.ID, ChannelID: d.ChannelID, AuthorID: d.Author.ID, Content: d.Content, CreatedAt: d.Timestamp}, true
+	m := Message{ID: d.ID, ChannelID: d.ChannelID, AuthorID: d.Author.ID, Content: d.Content, CreatedAt: d.Timestamp}
+	for _, a := range d.Attachments {
+		m.Attachments = append(m.Attachments, chat.Attachment{Name: a.Filename, URL: a.URL, ContentType: a.ContentType, Size: a.Size})
+	}
+	return m, true
 }
 
 // Interaction 是一次按鈕點擊（與其他平台共用）。

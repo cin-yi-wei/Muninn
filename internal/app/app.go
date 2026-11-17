@@ -32,6 +32,8 @@ type InboxJob struct {
 	// Attempts 是送進 claude 的次數。送之前就先 +1 寫回檔案，
 	// 所以 Muninn 跑到一半崩潰、重啟回放時看得出這則已經試過幾次。
 	Attempts int `json:"attempts,omitempty"`
+	// Attachments 是附件參照，處理時才下載
+	Attachments []chat.Attachment `json:"attachments,omitempty"`
 }
 
 // OutboxJob 是一則待送回頻道的回覆。
@@ -70,6 +72,7 @@ type App struct {
 	Schedules         *scheduler.Store // 選填：這個頻道的定時任務
 	Activity          bool             // true：claude 跑的時候在頻道顯示正在做什麼（活動旁白）
 	Workdir           string           // claude 的工作目錄；旁白裡的路徑會顯示成相對路徑
+	Files             Files            // 選填：附件下載與傳檔
 	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir
@@ -134,7 +137,7 @@ func (a *App) OnMessage(_ context.Context, m chat.Message) error {
 	}
 	job := InboxJob{
 		ID: jobID(m.CreatedAt, m.ID), ChannelID: m.ChannelID, MessageID: m.ID,
-		AuthorID: m.AuthorID, Content: m.Content, CreatedAt: m.CreatedAt,
+		AuthorID: m.AuthorID, Content: m.Content, CreatedAt: m.CreatedAt, Attachments: m.Attachments,
 	}
 	err := a.inbox.Put(job.ID, job)
 	if errors.Is(err, queue.ErrExists) {
@@ -173,6 +176,10 @@ func (a *App) RunWorker(ctx context.Context) error {
 		}
 		start := time.Now()
 		prompt := job.Content
+		if len(job.Attachments) > 0 {
+			a.pruneAttachments()
+			prompt += a.downloadAttachments(ctx, id, job.Attachments)
+		}
 		// 剛接手舊 session：第一則訊息前面附上交接說明
 		handoff := session.TakeHandoff(a.StateDir)
 		if handoff != "" {

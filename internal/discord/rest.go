@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"muninn/internal/chat"
 	"net/http"
 	"strconv"
@@ -176,3 +177,83 @@ func (r *REST) RespondInteraction(ctx context.Context, id, token string, typ int
 
 // SplitMessage 見 chat.SplitMessage。
 func SplitMessage(text string, limit int) []string { return chat.SplitMessage(text, limit) }
+
+// MaxUploadBytes 是 bot 上傳單一檔案的上限（未加成的伺服器為 10MB，保守取 8MB）。
+const MaxUploadBytes = 8 << 20
+
+// Fetch 下載附件（Discord 附件是 CDN 網址，不需要 token）。
+func (r *REST) Fetch(ctx context.Context, a chat.Attachment) (io.ReadCloser, error) {
+	if a.URL == "" {
+		return nil, fmt.Errorf("discord: 附件沒有網址")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "DiscordBot (muninn, 0.1)")
+	resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("discord: 下載附件回 %d", resp.StatusCode)
+	}
+	return resp.Body, nil
+}
+
+// SendFile 上傳一個檔案到頻道（multipart），caption 當訊息文字。
+func (r *REST) SendFile(ctx context.Context, channelID, name string, data []byte, caption string) error {
+	if len(data) > MaxUploadBytes {
+		return fmt.Errorf("檔案 %d MB 超過 Discord 上限 %d MB", len(data)>>20, MaxUploadBytes>>20)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"content":          truncate(caption),
+		"allowed_mentions": map[string]any{"parse": []string{}},
+		"attachments":      []any{map[string]any{"id": 0, "filename": name}},
+	})
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	pw, _ := mw.CreateFormField("payload_json")
+	_, _ = pw.Write(payload)
+	fw, err := mw.CreateFormFile("files[0]", name)
+	if err != nil {
+		return err
+	}
+	_, _ = fw.Write(data)
+	_ = mw.Close()
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.base()+"/channels/"+channelID+"/messages", bytes.NewReader(body.Bytes()))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bot "+r.Token)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.Header.Set("User-Agent", "DiscordBot (muninn, 0.1)")
+		resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(req)
+		if err != nil {
+			return err
+		}
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		resp.Body.Close()
+		if resp.StatusCode/100 == 2 {
+			return nil
+		}
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < 3 {
+			var rl struct {
+				RetryAfter float64 `json:"retry_after"`
+			}
+			wait := time.Second
+			if json.Unmarshal(respBody, &rl) == nil && rl.RetryAfter > 0 {
+				wait = time.Duration(rl.RetryAfter * float64(time.Second))
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
+		}
+		return fmt.Errorf("discord: 上傳檔案回 %d: %s", resp.StatusCode, respBody)
+	}
+}

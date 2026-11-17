@@ -52,6 +52,14 @@ token 放在 `telegram_token_env` 指定的環境變數（預設 `TELEGRAM_BOT_T
 - 白名單用 Telegram 的 user id（跟 Discord 的是兩套）。
 - 回覆裡的 Markdown（粗體、行內 code、code block、連結）會轉成 Telegram HTML，轉失敗就退回純文字。
 
+## 附件
+
+- 使用者傳的圖片、檔案（Discord 附件；Telegram 照片取最大尺寸、文件）會在處理時下載到
+  `state_dir/bindings/<name>/attachments/<job>/`，訊息後面附上路徑，claude 用 Read 讀（圖片也能直接看）。
+  只有附件沒有文字的訊息也會處理。單檔上限 25MB（Telegram bot 只能下載 20MB 以內），保留 7 天。
+- claude 要把檔案給使用者時用 `send_file` 工具（Discord 上限 8MB；Telegram 50MB，圖片直接顯示）。
+- Telegram 的輪詢位置存在 `state_dir/telegram_offset`，重啟不會重收已處理過的訊息。
+
 ## 頻道裡的 Muninn 指令（M4）
 
 `!` 開頭、白名單內的人才能下，立刻執行、不交給 claude、不用等目前這一輪跑完：
