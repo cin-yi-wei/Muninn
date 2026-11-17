@@ -126,13 +126,27 @@ claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出
 
 - **閒置回收**：claude 程序閒置超過 `idle_timeout`（預設 30m，`"0"` 關閉）就關掉，下一則訊息再 `--resume`。
 - **記憶體上限**：claude 和它的子程序加總超過 `memory_limit_mb`（預設 2048，`0` 關閉）時，等這一輪跑完就重開。
+- 有背景任務在跑（或 claude 正在處理背景任務的回報）時，閒置回收和記憶體重開都會跳過，因為背景任務活在 claude 程序裡，關掉就沒了（見下一節）。
 - **崩潰回放上限**：每則訊息送進 claude 前先記一次嘗試；同一則已經試了 `max_attempts` 次（預設 3）都沒跑完，
   就放棄並在頻道說明，避免「這則訊息讓 Muninn 崩潰 → 重啟回放 → 再崩潰」的無限迴圈。正常關機不算一次。
 - **卡住偵測**：claude 跑一輪時超過 `stall_timeout`（預設 20m，`"0"` 關閉）沒有任何輸出、也沒有在等權限確認，
   就判定卡住並中斷這一輪（session 保留），頻道會收到通知。
 - **登入失效**：claude 回「Not logged in · Please run /login」這類錯誤時，頻道收到一次通知，暫停送訊息給 claude，
   訊息留在佇列（不算嘗試次數），每 5 分鐘重試；恢復後通知並接著處理。
+- **花費紀錄**：log 的每輪花費（`cost≈`）以 `state_dir/bindings/<名稱>/cost_total` 記的上次累計值當基準，重啟後不會把 session 的歷史花費算成這一輪。接手舊 session（沒有這個檔）的第一輪記成 `?`。
 - Muninn 主程序本身建議用 systemd 跑，並設 `Restart=on-failure`、`MemoryMax=`。
+
+## 背景任務與 2 分鐘規則
+
+頻道一次只跑一輪，這一輪沒結束前，新訊息只能排隊。所以 Muninn 附加的系統提示要 claude 動手前先估計能不能在 2 分鐘內做完：
+
+- 做得完就直接做。
+- 做不完（掃很多檔案、跑很久的建置或測試、多步驟調查、要等外部結果）就丟背景：Agent 工具用背景執行，或用 `delegate`（見下一節）。派完立刻回覆「已派出，做完會回報」並結束這一輪，不等待、不輪詢。
+
+claude 用背景 subagent 或背景 Bash 時，任務做完它會自己多跑一輪來處理結果。這一輪不是由你的訊息開的，Muninn 會把它的回覆直接貼到頻道（出錯會貼「⚠️ Muninn：claude 處理背景任務回報時出錯」）。
+
+- `!status` 在有背景任務時多一行「背景任務：N 個還在跑」；claude 正在處理回報時狀態顯示「處理背景任務的回報中」。
+- 背景任務在跑時不做閒置回收和記憶體重開。
 
 ## 委派（agent-to-agent）
 
@@ -167,7 +181,8 @@ claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出
 
 - `muninn schedule add <頻道> <名稱> (--cron "0 9 * * 1-5" | --at "2026-11-18 09:00") --message "…"`、
   `muninn schedule rm|pause|resume|run <頻道> <名稱>`：不透過 claude 直接管理定時任務
-- `muninn notify <頻道> <文字>`：從外部腳本或長時間背景工作在頻道貼一則訊息（不經過 claude）
+- `muninn notify <頻道> <文字>`：從外部腳本或長時間背景工作在頻道貼一則訊息（不經過 claude）。`<頻道>` 可以是名稱，也可以是頻道 id
+- 設定檔路徑依序是 `-config`、環境變數 `MUNINN_CONFIG`、目前目錄的 `muninn.json`；沒設 `MUNINN_CONFIG` 且目前目錄沒有 `muninn.json` 時改用 `~/.config/muninn/muninn.json`，所以在任何目錄都能直接呼叫 `muninn notify`
 - 同一個 `state_dir` 只能有一個 Muninn 在跑，第二個會直接拒絕啟動
 
 ## 建置、安裝、檢查
