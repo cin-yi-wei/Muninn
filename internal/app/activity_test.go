@@ -62,6 +62,7 @@ func runOne(t *testing.T, asker Asker, activity bool) (*fakeSender, *App) {
 	snd := &fakeSender{}
 	a := newApp(t, t.TempDir(), asker, snd, nil)
 	a.Activity = activity
+	a.Workdir = "/repo/wt"
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go a.RunWorker(ctx)
@@ -81,7 +82,7 @@ func runOne(t *testing.T, asker Asker, activity bool) (*fakeSender, *App) {
 func TestActivityFeedLifecycle(t *testing.T) {
 	asker := toolAsker{gap: 900 * time.Millisecond, tools: []runner.Activity{
 		tool("Bash", `{"command":"ls","description":"列出檔案"}`),
-		tool("Read", `{"file_path":"/a.go"}`),
+		tool("Read", `{"file_path":"/repo/wt/internal/a.go"}`),
 		tool("Edit", `{"file_path":"/a.go"}`),
 		tool("Bash", `{"command":"go test ./..."}`),
 	}}
@@ -96,6 +97,9 @@ func TestActivityFeedLifecycle(t *testing.T) {
 	})
 	edits := snd.editsSnapshot()
 	final := edits[len(edits)-1]
+	if !strings.Contains(final, "`Read` internal/a.go") {
+		t.Fatalf("工作目錄內的路徑應顯示成相對路徑：%q", final)
+	}
 	if !strings.HasPrefix(final, "msg0:") || !strings.Contains(final, "go test ./...") {
 		t.Fatalf("最後應改寫同一則訊息成總結：%q", final)
 	}

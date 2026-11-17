@@ -221,7 +221,8 @@ func cmdRun(cfgPath string) error {
 			Ctl:               r,
 			SessionID:         sess.ID,
 			Schedules:         scheduler.NewStore(stateDir, cfg.Timezone),
-			Activity: b.ActivityOn(),
+			Activity:          b.ActivityOn(),
+			Workdir:           b.Workdir(),
 			MaxAttempts:       cfg.MaxAttempts,
 			Logf:              logger.Printf,
 		}

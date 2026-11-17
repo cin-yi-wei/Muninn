@@ -42,7 +42,11 @@ func (a *App) newActivityFeed() *activityFeed {
 // add 由 runner 在 Ask 的 goroutine 裡同步呼叫，只記下來、叫醒 loop，不碰網路。
 func (f *activityFeed) add(act runner.Activity) {
 	f.mu.Lock()
-	f.steps = append(f.steps, shortTool(act.Tool, act.Input))
+	step := shortTool(act.Tool, act.Input)
+	if wd := strings.TrimRight(f.a.Workdir, "/"); wd != "" {
+		step = strings.ReplaceAll(step, wd+"/", "")
+	}
+	f.steps = append(f.steps, step)
 	f.dirty = true
 	f.mu.Unlock()
 	select {

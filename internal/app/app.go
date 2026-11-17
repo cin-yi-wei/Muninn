@@ -69,6 +69,7 @@ type App struct {
 	MaxAttempts       int              // 同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
 	Schedules         *scheduler.Store // 選填：這個頻道的定時任務
 	Activity          bool             // true：claude 跑的時候在頻道顯示正在做什麼（活動旁白）
+	Workdir           string           // claude 的工作目錄；旁白裡的路徑會顯示成相對路徑
 	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir

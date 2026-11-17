@@ -5,7 +5,7 @@ claude_cron 的重寫版：拿掉 tmux，改用 headless `claude -p`（stream-js
 
 名字取自奧丁的記憶渡鴉 Muninn——飛出去打探、回來報告。
 
-設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M4 完成，下一步 M5（Telegram、活動旁白串流）。
+設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M4 完成；M5 的活動旁白完成，Telegram 待做。
 
 ## 使用方式
 
@@ -69,6 +69,12 @@ Muninn 會給每個頻道裡的 claude 一組工具，管理**自己這個頻道
 - 同一個排定時間點只會執行一次（崩潰、重啟都不會重複）。排程訊息不受白名單限制，也**不會**拿去回權限確認。
 - 任務存在 `state_dir/bindings/<name>/schedules.json`。預設時區由設定檔的 `timezone` 決定。
 - 頻道裡打 `!schedules` 看清單；`muninn schedules` 在終端機列出所有頻道的任務。
+
+## 活動旁白（M5）
+
+claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出它正在用的工具（最近 8 步，路徑顯示成相對工作目錄），
+最多每 2 秒更新一次；跑完改成「✅ 完成，N 個步驟，耗時 Xs」（或「已中斷」「出錯」）。
+純聊天、沒用到工具的回合不會出現。binding 設 `"activity": false` 可以關掉。
 
 ## 自我保護（M4）
 
