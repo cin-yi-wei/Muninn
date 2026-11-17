@@ -259,7 +259,9 @@ func clampLines(s string, maxLines, maxCol int) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil
 	}
-	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	// 檔案結尾的換行不算一行，否則區塊尾巴會多一行空白
+	s = strings.TrimRight(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	lines := strings.Split(s, "\n")
 	var out []string
 	for i, ln := range lines {
 		if i >= maxLines {

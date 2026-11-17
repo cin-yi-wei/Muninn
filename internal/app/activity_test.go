@@ -98,7 +98,13 @@ func TestToolBlockShowsChanges(t *testing.T) {
 	if !strings.HasPrefix(write, "```\npackage a") || strings.Count(write, "```") != 2 {
 		t.Fatalf("Write 應顯示內容，內容裡的 ``` 不能把區塊關掉：%q", write)
 	}
-	if toolBlock("Bash", json.RawMessage(`{"command":"ls"}`)) != "" || toolBlock("Edit", json.RawMessage(`{}`)) != "" {
+	if w := toolBlock("Write", json.RawMessage(`{"content":"a\nb\n\n"}`)); w != "```\na\nb\n```" {
+		t.Fatalf("結尾換行不該變成空白行：%q", w)
+	}
+	if e := toolBlock("Edit", json.RawMessage(`{"old_string":"a\r\n","new_string":"b\n"}`)); e != "```diff\n- a\n+ b\n```" {
+		t.Fatalf("diff 結尾換行不該變成空的 -/+ 行：%q", e)
+	}
+	if toolBlock("Bash", json.RawMessage(`{"command":"ls"}`)) != ""|| toolBlock("Edit", json.RawMessage(`{}`)) != "" {
 		t.Fatal("非改檔工具或沒有內容時不該有區塊")
 	}
 	var big []string
