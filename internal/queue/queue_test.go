@@ -314,3 +314,37 @@ func TestCrashRecovery_只有pending檔重建Dir後仍列得到(t *testing.T) {
 		}
 	}
 }
+
+func TestPut_點開頭的id被拒_不然Pending永遠列不出來(t *testing.T) {
+	d := newDir(t)
+	if err := d.Put(".x", job{}); err == nil {
+		t.Fatal("點開頭的 id 會被 Pending 當成暫存檔略過，Put 必須拒絕")
+	}
+}
+
+func TestUpdate_不存在的id不能憑空建出job(t *testing.T) {
+	d := newDir(t)
+	if err := d.Update("ghost", job{}); err == nil {
+		t.Fatal("Update 不存在的 id 應回錯誤")
+	}
+	if err := d.Put("a", job{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Done("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Update("a", job{}); err == nil {
+		t.Fatal("已經 Done 的 job 不能被 Update 拉回 pending")
+	}
+	if ids, _ := d.Pending(); len(ids) != 0 {
+		t.Fatalf("pending 應該是空的：%v", ids)
+	}
+	for _, bad := range []string{"../x", "a/b"} {
+		if err := d.Update(bad, job{}); err == nil {
+			t.Fatalf("Update 應拒絕不合法的 id %q", bad)
+		}
+		if err := d.Done(bad); err == nil {
+			t.Fatalf("Done 應拒絕不合法的 id %q", bad)
+		}
+	}
+}

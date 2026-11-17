@@ -34,8 +34,8 @@ func (d Dir) Init() error {
 // Put 以 id 為檔名原子寫入一則 job。id 已存在（pending 或 done）時回傳 ErrExists，
 // 讓同一則 Discord 訊息重送時不會被處理兩次。
 func (d Dir) Put(id string, v any) error {
-	if strings.ContainsAny(id, `/\`) || id == "" {
-		return fmt.Errorf("queue: 不合法的 id %q", id)
+	if err := checkID(id); err != nil {
+		return err
 	}
 	name := id + ".json"
 	for _, p := range []string{filepath.Join(d.pending(), name), filepath.Join(d.done(), name)} {
@@ -52,6 +52,14 @@ func (d Dir) Put(id string, v any) error {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(d.pending(), name))
+}
+
+// checkID 擋掉會逃出目錄、或會被 Pending 當成暫存檔略過（點開頭）的 id。
+func checkID(id string) error {
+	if id == "" || strings.ContainsAny(id, `/\`) || strings.HasPrefix(id, ".") {
+		return fmt.Errorf("queue: 不合法的 id %q", id)
+	}
+	return nil
 }
 
 // ErrExists 表示同 id 的 job 已經在佇列裡（或處理過了）。
@@ -86,6 +94,13 @@ func (d Dir) Get(id string, v any) error {
 
 // Update 原子覆寫一則待處理 job（例如更新嘗試次數）。
 func (d Dir) Update(id string, v any) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
+	// 只改寫還在 pending 的 job；不存在（或已經 Done）時不能憑空建出來，否則會被重複處理
+	if _, err := os.Stat(filepath.Join(d.pending(), id+".json")); err != nil {
+		return fmt.Errorf("queue: Update 找不到待處理的 job %q: %w", id, err)
+	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
@@ -99,5 +114,8 @@ func (d Dir) Update(id string, v any) error {
 
 // Done 把 job 從 pending/ 搬到 done/。
 func (d Dir) Done(id string) error {
+	if err := checkID(id); err != nil {
+		return err
+	}
 	return os.Rename(filepath.Join(d.pending(), id+".json"), filepath.Join(d.done(), id+".json"))
 }
