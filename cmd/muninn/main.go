@@ -49,6 +49,14 @@ func main() {
 	def := os.Getenv("MUNINN_CONFIG")
 	if def == "" {
 		def = "muninn.json"
+		// 從別的目錄呼叫（例如腳本裡的 muninn notify）時，目前目錄沒有設定檔就用安裝位置的
+		if _, err := os.Stat(def); err != nil {
+			if home, err := os.UserHomeDir(); err == nil {
+				if p := filepath.Join(home, ".config", "muninn", "muninn.json"); fileExists(p) {
+					def = p
+				}
+			}
+		}
 	}
 	cfgPath := flag.String("config", def, "設定檔路徑")
 	flag.Usage = func() {
@@ -415,6 +423,11 @@ func cmdSchedule(cfgPath string, args []string) error {
 }
 
 // cmdNotify 在頻道貼一則訊息：寫進那個頻道的 outbox，正在跑的 Muninn 幾秒內送出（不經過 claude）。
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
 func cmdNotify(cfgPath string, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("用法: muninn notify <頻道> <文字>")
@@ -425,7 +438,10 @@ func cmdNotify(cfgPath string, args []string) error {
 	}
 	b, ok := cfg.Find(args[0])
 	if !ok {
-		return fmt.Errorf("找不到頻道 %q", args[0])
+		b, ok = cfg.FindChannel(args[0]) // 也接受頻道 id（舊腳本傳的是 Discord 頻道 id）
+	}
+	if !ok {
+		return fmt.Errorf("找不到頻道 %q（名稱或頻道 id 都對不上）", args[0])
 	}
 	q := queue.Dir{Root: filepath.Join(cfg.StateDirFor(b.Name), "outbox")}
 	if err := q.Init(); err != nil {

@@ -248,6 +248,16 @@ func (c Config) PermTimeout() time.Duration {
 }
 
 // Find 依名稱找 binding。
+// FindChannel 用頻道 id（Discord 頻道 id 或 Telegram chat id）找 binding。
+func (c Config) FindChannel(id string) (Binding, bool) {
+	for _, b := range c.Bindings {
+		if id != "" && b.ChannelID == id {
+			return b, true
+		}
+	}
+	return Binding{}, false
+}
+
 func (c Config) Find(name string) (Binding, bool) {
 	for _, b := range c.Bindings {
 		if b.Name == name {
