@@ -24,6 +24,9 @@ type Config struct {
 	PermissionTimeout string `json:"permission_timeout"`
 	// IdleTimeout：claude 程序閒置多久就關掉（下次來訊息再 --resume），"0" 表示不回收，預設 30m
 	IdleTimeout string `json:"idle_timeout"`
+	// StallTimeout：claude 跑一輪時超過這麼久沒有任何輸出就判定卡住並中斷，"0" 表示不檢查，預設 20m
+	// （claude 的 Bash 工具單次最長 10 分鐘，所以 20 分鐘完全沒動靜才算卡住）
+	StallTimeout string `json:"stall_timeout"`
 	// MemoryLimitMB：單一 binding 的 claude（含子程序）記憶體上限，超過就在閒置時重開；0 表示不檢查，預設 2048
 	MemoryLimitMB *int `json:"memory_limit_mb"`
 	// MaxAttempts：同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
@@ -115,6 +118,12 @@ func Load(path string) (Config, error) {
 	if c.PermissionTimeout == "" {
 		c.PermissionTimeout = "30m"
 	}
+	if c.StallTimeout == "" {
+		c.StallTimeout = "20m"
+	}
+	if d, err := time.ParseDuration(c.StallTimeout); err != nil || d < 0 {
+		return Config{}, fmt.Errorf("registry: stall_timeout %q 不是合法的時間長度", c.StallTimeout)
+	}
 	if c.IdleTimeout == "" {
 		c.IdleTimeout = "30m"
 	}
@@ -172,6 +181,12 @@ func Load(path string) (Config, error) {
 		names[b.Name], channels[b.Platform+":"+b.ChannelID] = true, true
 	}
 	return c, nil
+}
+
+// Stall 回傳解析後的 stall_timeout，0 表示不檢查。
+func (c Config) Stall() time.Duration {
+	d, _ := time.ParseDuration(c.StallTimeout)
+	return d
 }
 
 // Idle 回傳解析後的 idle_timeout（Load 已驗證過），0 表示不回收。

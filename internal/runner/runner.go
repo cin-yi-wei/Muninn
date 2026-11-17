@@ -116,6 +116,42 @@ type Runner struct {
 	busy        atomic.Bool  // 正在跑一輪
 	lastUsed    atomic.Int64 // 上一輪結束的時間（unix nano）
 	interrupted atomic.Bool  // 這一輪被 Interrupt 中斷
+	lastEvent   atomic.Int64 // 最近一次收到 stream-json 事件的時間（unix nano）
+	stderrTail  *tailBuffer
+}
+
+// tailBuffer 只保留最後 max 個位元組。
+type tailBuffer struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.buf)
+}
+
+func lastLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " / ")
 }
 
 // ErrInterrupted 表示這一輪被使用者中斷（!cancel / !restart）。
@@ -177,11 +213,13 @@ func (r *Runner) start() error {
 	if r.cfg.Env != nil {
 		cmd.Env = r.cfg.Env
 	}
+	// stderr 照常輸出，同時留最後一段：程序提前結束時拿來判斷原因（例如登入失效）
+	r.stderrTail = &tailBuffer{max: 4096}
+	var errOut io.Writer = os.Stderr
 	if r.cfg.Stderr != nil {
-		cmd.Stderr = r.cfg.Stderr
-	} else {
-		cmd.Stderr = os.Stderr
+		errOut = r.cfg.Stderr
 	}
+	cmd.Stderr = io.MultiWriter(errOut, r.stderrTail)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -204,6 +242,7 @@ func (r *Runner) start() error {
 			if json.Unmarshal(sc.Bytes(), &ev) != nil {
 				continue // 非 JSON 行直接略過
 			}
+			r.lastEvent.Store(time.Now().UnixNano())
 			events <- ev
 		}
 		_ = cmd.Wait()
@@ -223,6 +262,7 @@ func (r *Runner) Ask(ctx context.Context, text string) (rep Reply, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.interrupted.Store(false)
+	r.lastEvent.Store(time.Now().UnixNano()) // 這一輪從現在開始算安靜多久
 	r.busy.Store(true)
 	defer func() {
 		r.busy.Store(false)
@@ -291,6 +331,9 @@ func (r *Runner) Ask(ctx context.Context, text string) (rep Reply, err error) {
 						return r.reply(ev, assistantText), nil
 					}
 				default:
+					if tail := strings.TrimSpace(r.stderrTail.String()); tail != "" {
+						return Reply{}, fmt.Errorf("%w: %s", ErrExited, lastLines(tail, 3))
+					}
 					return Reply{}, ErrExited
 				}
 			}
@@ -403,11 +446,17 @@ type Status struct {
 	PID      int
 	IdleFor  time.Duration // 距離上一輪結束多久（從沒跑過為 0）
 	RSSBytes int64         // claude 及其子程序（同一個 process group）的常駐記憶體總和
+	Silent   time.Duration // 執行中時，距離上一個 stream-json 事件多久（判斷卡住用）
 }
 
 // Status 回傳狀態快照，不需等目前這一輪跑完。
 func (r *Runner) Status() Status {
 	st := Status{PID: int(r.pid.Load()), Busy: r.busy.Load()}
+	if st.Busy {
+		if le := r.lastEvent.Load(); le != 0 {
+			st.Silent = time.Since(time.Unix(0, le))
+		}
+	}
 	st.Alive = st.PID != 0
 	if lu := r.lastUsed.Load(); lu != 0 {
 		st.IdleFor = time.Since(time.Unix(0, lu))

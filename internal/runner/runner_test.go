@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,4 +268,28 @@ done
 	if _, err := r.Ask(ctx5s(t), "x"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestExitIncludesStderrAndSilent(t *testing.T) {
+	bin, dir := fakeClaude(t, `#!/bin/sh
+echo "Invalid API key · Please run /login" >&2
+exit 1
+`)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u", Stderr: io.Discard})
+	_, err := r.Ask(ctx5s(t), "x")
+	if !errors.Is(err, ErrExited) || !strings.Contains(err.Error(), "Please run /login") {
+		t.Fatalf("提前結束的錯誤應帶 stderr 尾巴：%v", err)
+	}
+
+	bin, dir = fakeClaude(t, `#!/bin/sh
+while IFS= read -r line; do sleep 30; done
+`)
+	r = New(Config{Bin: bin, Workdir: dir, SessionID: "u", Stderr: io.Discard})
+	go r.Ask(context.Background(), "x")
+	time.Sleep(300 * time.Millisecond)
+	st := r.Status()
+	if !st.Busy || st.Silent < 200*time.Millisecond {
+		t.Fatalf("執行中沒有事件時 Silent 應持續增加：%+v", st)
+	}
+	r.Interrupt()
 }

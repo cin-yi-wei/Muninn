@@ -73,12 +73,14 @@ type App struct {
 	Activity          bool             // true：claude 跑的時候在頻道顯示正在做什麼（活動旁白）
 	Workdir           string           // claude 的工作目錄；旁白裡的路徑會顯示成相對路徑
 	Files             Files            // 選填：附件下載與傳檔
+	StallTimeout      time.Duration    // claude 跑一輪時超過這麼久沒有任何事件就判定卡住，0 表示不檢查
 	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir
 	wakeWorker    chan struct{}
 	wakeSender    chan struct{}
 	perm          permState
+	auth          authState
 }
 
 func (a *App) logf(format string, args ...any) {
@@ -171,6 +173,10 @@ func (a *App) RunWorker(ctx context.Context) error {
 			return a.finish(id, job, fmt.Sprintf("⚠️ Muninn：這則訊息已經試了 %d 次，每次都在處理途中中斷（Muninn 崩潰或重啟），放棄處理。\n> %s",
 				maxAttempts, firstLine(job.Content)))
 		}
+		// 登入失效期間不送 claude（一定失敗），job 留著等恢復
+		if a.authBlocked() {
+			return errAuthBlocked
+		}
 		if err := a.inbox.Update(id, job); err != nil {
 			return err
 		}
@@ -210,6 +216,14 @@ func (a *App) RunWorker(ctx context.Context) error {
 			_ = a.inbox.Update(id, job)
 			return ctx.Err()
 		}
+		if isAuthFailure(rep, err) {
+			// 登入失效：這則不算處理過，次數退回去，留在佇列等登入恢復後重跑
+			job.Attempts--
+			_ = a.inbox.Update(id, job)
+			a.markAuthDown(rep, err)
+			return errAuthBlocked
+		}
+		a.markAuthUp()
 		text := rep.Text
 		if err == nil && handoff != "" {
 			if cerr := session.ClearHandoff(a.StateDir); cerr != nil {
@@ -279,7 +293,9 @@ func (a *App) drainLoop(ctx context.Context, wakeCh chan struct{}, q queue.Dir, 
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
-				a.logf("queue %s: 處理 %s 失敗: %v", q.Root, id, err)
+				if !errors.Is(err, errAuthBlocked) { // 登入失效已另外通知，不要每 2 秒洗 log
+					a.logf("queue %s: 處理 %s 失敗: %v", q.Root, id, err)
+				}
 				break
 			}
 		}

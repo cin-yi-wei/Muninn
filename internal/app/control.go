@@ -122,6 +122,9 @@ func (a *App) RunSupervisor(ctx context.Context, every, idle time.Duration, memL
 		case <-t.C:
 		}
 		st := a.Ctl.Status()
+		if a.checkStall(st, a.StallTimeout) {
+			continue
+		}
 		if memLimit > 0 && st.Alive && st.RSSBytes > memLimit {
 			if a.Ctl.CloseIfIdle(ctx, 0) {
 				a.logf("supervisor: 記憶體 %d MB 超過上限，已重啟", st.RSSBytes>>20)

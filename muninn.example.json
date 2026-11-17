@@ -5,6 +5,7 @@
   "allowed_users": ["<你的 Discord user id>"],
   "permission_timeout": "30m",
   "idle_timeout": "30m",
+  "stall_timeout": "20m",
   "memory_limit_mb": 2048,
   "max_attempts": 3,
   "timezone": "Asia/Taipei",

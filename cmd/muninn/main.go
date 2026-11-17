@@ -246,6 +246,7 @@ func cmdRun(cfgPath string) error {
 			Activity:          b.ActivityOn(),
 			Workdir:           b.Workdir(),
 			MaxAttempts:       cfg.MaxAttempts,
+			StallTimeout:      cfg.Stall(),
 			Logf:              logger.Printf,
 		}
 		if err := a.Init(); err != nil {
