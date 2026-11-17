@@ -5,7 +5,7 @@ claude_cron 的重寫版：拿掉 tmux，改用 headless `claude -p`（stream-js
 
 名字取自奧丁的記憶渡鴉 Muninn——飛出去打探、回來報告。
 
-設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M3 完成，M4 進行中（supervisor 完成，scheduler 待做）。
+設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M4 完成，下一步 M5（Telegram、活動旁白串流）。
 
 ## 使用方式
 
@@ -49,6 +49,22 @@ DISCORD_BOT_TOKEN=... ./bin/muninn -config muninn.json run
 - `!cancel`：中斷 claude 正在跑的這一輪，session 保留
 - `!restart`：中斷並關掉 claude 程序，下一則訊息會重新啟動並 `--resume`
 - `!help`
+
+## 定時任務（M4）
+
+格式沿用 claude_cron 的 `triggers.json`，放在 `triggers_file`（預設 `<state_dir>/triggers.json`）：
+
+```json
+{"triggers": [{"name": "am-ci", "binding": "muninn-main", "cron": "0 9 * * 1-5", "timezone": "Asia/Taipei",
+               "message": "早安，幫我看一下昨天的 CI", "catch_up": false, "enabled": true}]}
+```
+
+- 到期就當成使用者在頻道傳了 `message`，走同一條佇列。每 30 秒檢查一次，可以直接手改檔案（Muninn 寫回時只更新 `last_checked`）。
+- `catch_up`：Muninn 沒在跑時錯過的時間點，回來補跑一次（`false` 則錯過超過 10 分鐘就跳過）。
+- 同一個排定時間點只會執行一次（崩潰、重啟都不會重複）。排程訊息不受白名單限制，也**不會**拿去回權限確認。
+- `muninn triggers list`：列出所有任務與下次觸發時間。`muninn check` 會驗證 cron、時區、binding。
+- `muninn triggers import <claude_cron 的 triggers.json>`：只匯入本設定有的 binding，不補跑過去的時間點。
+  claude_cron 那邊同名的若還開著，兩邊會各觸發一次。
 
 ## 自我保護（M4）
 

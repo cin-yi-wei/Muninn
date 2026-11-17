@@ -31,6 +31,10 @@ type Config struct {
 	ExtraArgs []string // 額外 flag（例如之後 M3 的 --permission-prompt-tool）
 	Env       []string // 選填，覆寫環境變數（nil 時沿用目前程序的環境）
 	Stderr    io.Writer
+	// SessionExists 選填：每次啟動前問一次 session 是否真的存在，決定用 --resume 還是 --session-id。
+	// 光看 Resume / 是否啟動過不可靠：claude 要等第一則訊息才會寫出 session 檔，
+	// 在那之前重啟就去 --resume，claude 會回 "No conversation found"，這個 binding 從此卡死。
+	SessionExists func() bool
 }
 
 // Reply 是一輪對話（一則 user 訊息到 result 事件）的結果。
@@ -111,7 +115,11 @@ func (r *Runner) args() []string {
 		"--output-format", "stream-json",
 		"--verbose", // stream-json 輸出在 -p 模式下必須搭配 --verbose
 	}
-	if r.cfg.Resume || r.started {
+	resume := r.cfg.Resume || r.started
+	if r.cfg.SessionExists != nil {
+		resume = r.cfg.SessionExists()
+	}
+	if resume {
 		a = append(a, "--resume", r.cfg.SessionID)
 	} else {
 		a = append(a, "--session-id", r.cfg.SessionID)

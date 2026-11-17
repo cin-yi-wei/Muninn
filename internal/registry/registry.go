@@ -26,8 +26,10 @@ type Config struct {
 	// MemoryLimitMB：單一 binding 的 claude（含子程序）記憶體上限，超過就在閒置時重開；0 表示不檢查，預設 2048
 	MemoryLimitMB *int `json:"memory_limit_mb"`
 	// MaxAttempts：同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
-	MaxAttempts int       `json:"max_attempts"`
-	Bindings    []Binding `json:"bindings"`
+	MaxAttempts int `json:"max_attempts"`
+	// TriggersFile：定時任務設定（格式同 claude_cron 的 triggers.json），預設 <state_dir>/triggers.json
+	TriggersFile string    `json:"triggers_file"`
+	Bindings     []Binding `json:"bindings"`
 }
 
 // Binding 是一個頻道的綁定。
@@ -118,6 +120,10 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("registry: permission_timeout %q 不是合法的時間長度", c.PermissionTimeout)
 	}
 	c.StateDir = expand(c.StateDir)
+	if c.TriggersFile == "" {
+		c.TriggersFile = filepath.Join(c.StateDir, "triggers.json")
+	}
+	c.TriggersFile = expand(c.TriggersFile)
 	c.ClaudeBin = expand(c.ClaudeBin)
 
 	names, channels := map[string]bool{}, map[string]bool{}

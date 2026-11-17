@@ -83,3 +83,17 @@ func TestFindLatestEmpty(t *testing.T) {
 		t.Fatal("沒有 session 時應回錯")
 	}
 }
+
+func TestExists(t *testing.T) {
+	home := t.TempDir()
+	id := "44444444-4444-4444-8444-444444444444"
+	if Exists(home, id) {
+		t.Fatal("還沒有檔案不該存在")
+	}
+	pd := filepath.Join(home, "projects", "-some-dir")
+	_ = os.MkdirAll(pd, 0o755)
+	_ = os.WriteFile(filepath.Join(pd, id+".jsonl"), []byte("{}\n"), 0o644)
+	if !Exists(home, id) || Exists(home, "../../etc/passwd") {
+		t.Fatal("Exists 判斷錯誤")
+	}
+}

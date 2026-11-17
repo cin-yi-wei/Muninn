@@ -40,6 +40,9 @@ func (f *fakeCtl) CloseIfIdle(context.Context, time.Duration) bool {
 	f.closeIdle.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closeResult {
+		f.st.RSSBytes = 100 << 20 // 重開後記憶體回到正常
+	}
 	return f.closeResult
 }
 func (f *fakeCtl) Status() runner.Status {
@@ -191,10 +194,7 @@ func TestSupervisorIdleAndMemory(t *testing.T) {
 	go a.RunSupervisor(ctx, 10*time.Millisecond, time.Minute, 2<<30)
 	waitFor(t, func() bool { return strings.Contains(lastText(snd), "超過上限") })
 
-	// 記憶體正常時只做閒置回收，不再通知
-	ctl.mu.Lock()
-	ctl.st.RSSBytes = 100 << 20
-	ctl.mu.Unlock()
+	// 重開後記憶體正常：只做閒置回收，不再通知
 	n := ctl.closeIdle.Load()
 	waitFor(t, func() bool { return ctl.closeIdle.Load() > n+2 })
 	if c := len(snd.snapshot()); c != 1 {

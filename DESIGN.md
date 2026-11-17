@@ -2,7 +2,7 @@
 
 > 重寫 claude_cron：拿掉 tmux，改用 headless `claude -p`。語言 Go。全新 repo。
 > 名字取自奧丁的記憶渡鴉 Muninn——每天飛出去打探、回來跟主人報告，正是 agent 派到各頻道跑完回報的畫面。（拆元件時「思想」渡鴉 Huginn 可留給另一半用。）
-> 狀態：M1～M3 完成（2026-11-17 實機驗過；M2 的「接手既有 session」只驗到單元測試與 adopt 指令，實機對話未測），下一步 M4。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
+> 狀態：M1～M4 完成（2026-11-17 實機驗過；M2 的「接手既有 session」只驗到單元測試與 adopt 指令，實機對話未測），下一步 M5。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
 
 ## 1. 為什麼重寫
 
@@ -104,3 +104,12 @@ claude_cron 開的 session 就是普通 claude session（`~/.claude/projects/<�
 - 同一則 job 反覆讓程序崩潰時會無限回放：要加重試上限（例如 3 次），超過就放棄並通知頻道。
 - 停止／重啟這類指令由 Muninn 自己攔截，不交給 claude（見 §9）。
 - 記憶體：每個 binding 約 500MB，閒置回收與上限以此估算。
+
+## 13. M4 實測紀錄（2026-11-17）
+
+- `!status`、閒置回收（設 3 分鐘）實機生效；`!cancel` 與崩潰回放上限只有單元測試。
+- scheduler 沿用 claude_cron 的 triggers.json 格式與語意；`triggers import` 拿真的 triggers.json 試過（14 個匯入、時區換算正確、原檔未動）。
+- 實測抓到兩個 bug：
+  - 手寫、沒有 `last_checked` 的 trigger 永遠不會觸發（每輪都從「現在」往後找）。改成從 `created_at` 起算，都沒有就第一輪寫回起算點。
+  - **binding 建好、還沒收過訊息就重啟 → `--resume` 一個 claude 還沒建立的 session → "No conversation found"，這個 binding 卡死。**改成每次啟動前檢查 `~/.claude/projects/*/<id>.jsonl` 是否存在，再決定用 `--resume` 還是 `--session-id`。
+- 排程訊息 ID 由排定時間導出，先寫標記（含 job id）再寫 inbox，崩潰在任一點都不會重複或漏送。

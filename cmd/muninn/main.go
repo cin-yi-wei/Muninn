@@ -5,6 +5,8 @@
 //	muninn [-config muninn.json] run                       啟動所有 binding
 //	muninn [-config muninn.json] check                     驗證設定並確認 worktree，不連 Discord
 //	muninn [-config muninn.json] adopt [--force] <binding> 接手該 worktree 最近的既有 claude session
+//	muninn [-config muninn.json] triggers list             列出定時任務與下次觸發時間
+//	muninn [-config muninn.json] triggers import <檔案>    從 claude_cron 的 triggers.json 匯入（只取本設定有的 binding）
 //	muninn permission-mcp --socket S --binding B           （內部用）claude 啟動的權限確認 MCP server
 //
 // 設定檔格式見 muninn.example.json。bot token 不放設定檔，從 token_env 指定的環境變數讀。
@@ -29,6 +31,7 @@ import (
 	"muninn/internal/permission"
 	"muninn/internal/registry"
 	"muninn/internal/runner"
+	"muninn/internal/scheduler"
 	"muninn/internal/session"
 	"muninn/internal/worktree"
 )
@@ -40,7 +43,7 @@ func main() {
 	}
 	cfgPath := flag.String("config", def, "設定檔路徑")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "用法: muninn [-config 檔案] run | check | adopt [--force] <binding>\n")
+		fmt.Fprintf(os.Stderr, "用法: muninn [-config 檔案] run | check | adopt [--force] <binding> | triggers list|import <檔案>\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -53,6 +56,8 @@ func main() {
 		err = cmdCheck(*cfgPath)
 	case "adopt":
 		err = cmdAdopt(*cfgPath, flag.Args()[1:])
+	case "triggers":
+		err = cmdTriggers(*cfgPath, flag.Args()[1:])
 	case "permission-mcp":
 		err = cmdPermissionMCP(flag.Args()[1:])
 	default:
@@ -101,6 +106,26 @@ func cmdCheck(cfgPath string) error {
 		fmt.Printf("%-20s 頻道 %s  工作目錄 %s  分支 %q  暫停=%v  %s\n", b.Name, b.ChannelID, b.Workdir(), b.Branch, b.Paused, st)
 	}
 	fmt.Printf("設定 OK，共 %d 個 binding\n", len(cfg.Bindings))
+	return checkTriggers(cfg)
+}
+
+// checkTriggers 驗證定時任務：cron／時區不合法、指向不存在的 binding 都列出來。
+func checkTriggers(cfg registry.Config) error {
+	tf, err := scheduler.Load(cfg.TriggersFile)
+	if err != nil {
+		return err
+	}
+	bad := 0
+	for _, t := range tf.Triggers {
+		if err := scheduler.Validate(t); err != nil {
+			fmt.Printf("⚠️ trigger %v\n", err)
+			bad++
+		} else if _, ok := cfg.Find(t.Binding); !ok {
+			fmt.Printf("⚠️ trigger %s 指向不存在的 binding %q\n", t.Name, t.Binding)
+			bad++
+		}
+	}
+	fmt.Printf("定時任務 %d 個（%s），有問題 %d 個\n", len(tf.Triggers), cfg.TriggersFile, bad)
 	return nil
 }
 
@@ -163,6 +188,12 @@ func cmdRun(cfgPath string) error {
 	// 權限確認：claude → permission-mcp 子程序 → 這個 socket → 對應 binding 的 App
 	socket := filepath.Join(cfg.StateDir, "permission.sock")
 
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	claudeHome := filepath.Join(home, ".claude")
+
 	sender := &discord.REST{Token: token}
 	byName := map[string]*app.App{}
 	apps := map[string]*app.App{} // channel id → app
@@ -183,13 +214,15 @@ func cmdRun(cfgPath string) error {
 			"--mcp-config", permission.MCPConfig(exe, socket, b.Name),
 			"--permission-prompt-tool", permission.PromptTool,
 		}, b.ClaudeArgs...)
+		sid := sess.ID
 		r := runner.New(runner.Config{
-			Bin:       cfg.ClaudeBin,
-			Workdir:   b.Workdir(),
-			SessionID: sess.ID,
-			Resume:    resume,
-			Model:     b.Model,
-			ExtraArgs: extra,
+			SessionExists: func() bool { return session.Exists(claudeHome, sid) },
+			Bin:           cfg.ClaudeBin,
+			Workdir:       b.Workdir(),
+			SessionID:     sess.ID,
+			Resume:        resume,
+			Model:         b.Model,
+			ExtraArgs:     extra,
 		})
 		runners = append(runners, r)
 		a := &app.App{
@@ -250,6 +283,28 @@ func cmdRun(cfgPath string) error {
 	}
 	g.Go(func() error { return gw.Run(gctx) })
 	g.Go(func() error {
+		// 定時任務：每 30 秒檢查一次，到期的注入對應 binding 的 inbox
+		inject := func(f scheduler.Fire) (bool, error) {
+			a := byName[f.Trigger.Binding]
+			if a == nil {
+				return false, scheduler.ErrUnknownBinding
+			}
+			return a.InjectScheduled(f)
+		}
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			if _, err := scheduler.RunOnce(cfg.TriggersFile, time.Now(), inject, log.Printf); err != nil {
+				log.Printf("scheduler: %v", err)
+			}
+			select {
+			case <-gctx.Done():
+				return gctx.Err()
+			case <-t.C:
+			}
+		}
+	})
+	g.Go(func() error {
 		return permission.Serve(gctx, socket, func(ctx context.Context, req permission.Request) permission.Decision {
 			a := byName[req.Binding]
 			if a == nil {
@@ -289,4 +344,87 @@ func cmdPermissionMCP(args []string) error {
 	// stdout 是 MCP 通道，log 一律走 stderr
 	log.SetOutput(os.Stderr)
 	return permission.ServeMCP(context.Background(), os.Stdin, os.Stdout, *socket, *binding)
+}
+
+func cmdTriggers(cfgPath string, args []string) error {
+	cfg, err := registry.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("用法: muninn triggers list | import <檔案>")
+	}
+	switch args[0] {
+	case "list":
+		tf, err := scheduler.Load(cfg.TriggersFile)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		for _, t := range tf.Triggers {
+			next := "—"
+			if spec, err := scheduler.ParseCron(t.Cron); err == nil {
+				if loc, err := time.LoadLocation(tzOrDefault(t.Timezone)); err == nil {
+					if n, ok := scheduler.NextOccurrence(spec, loc, now); ok {
+						next = n.Format("01-02 15:04 MST")
+					}
+				}
+			}
+			fmt.Printf("%-28s %-20s %-18s 啟用=%-5v 補跑=%-5v 下次 %s\n", t.Name, t.Binding, t.Cron, t.Enabled, t.CatchUp, next)
+		}
+		fmt.Printf("共 %d 個（%s）\n", len(tf.Triggers), cfg.TriggersFile)
+		return nil
+	case "import":
+		if len(args) != 2 {
+			return fmt.Errorf("用法: muninn triggers import <claude_cron 的 triggers.json>")
+		}
+		src, err := scheduler.Load(args[1])
+		if err != nil {
+			return err
+		}
+		dst, err := scheduler.Load(cfg.TriggersFile)
+		if err != nil {
+			return err
+		}
+		have := map[string]bool{}
+		for _, t := range dst.Triggers {
+			have[t.Name] = true
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		added, skipped := 0, 0
+		for _, t := range src.Triggers {
+			if _, ok := cfg.Find(t.Binding); !ok || have[t.Name] {
+				skipped++
+				continue
+			}
+			if err := scheduler.Validate(t); err != nil {
+				fmt.Printf("⚠️ 略過 %v\n", err)
+				skipped++
+				continue
+			}
+			// last_checked 設成現在：匯入不補跑過去錯過的時間點，從下一個排定時間開始
+			t.LastChecked = now
+			dst.Triggers = append(dst.Triggers, t)
+			fmt.Printf("匯入 %s（binding %s，%s，啟用=%v）\n", t.Name, t.Binding, t.Cron, t.Enabled)
+			added++
+		}
+		if added > 0 {
+			if err := scheduler.Save(cfg.TriggersFile, dst); err != nil {
+				return err
+			}
+		}
+		fmt.Printf("匯入 %d 個、略過 %d 個（binding 不在本設定或同名已存在）→ %s\n", added, skipped, cfg.TriggersFile)
+		if added > 0 {
+			fmt.Println("⚠️ claude_cron 那邊的同名 trigger 若還開著，兩邊會各觸發一次；切換前記得停用其中一邊。")
+		}
+		return nil
+	}
+	return fmt.Errorf("不認得的子指令 %q", args[0])
+}
+
+func tzOrDefault(tz string) string {
+	if tz == "" {
+		return scheduler.DefaultTimezone
+	}
+	return tz
 }

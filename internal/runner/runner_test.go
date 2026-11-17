@@ -216,3 +216,30 @@ func TestCloseIfIdle(t *testing.T) {
 		t.Fatalf("回收後下一則應重新啟動：%+v %v", rep, err)
 	}
 }
+
+func TestSessionExistsDecidesResume(t *testing.T) {
+	bin, dir := fakeClaude(t, "")
+	exists := false
+	// Resume=true 但 session 其實不存在（重啟前從沒收過訊息）：要用 --session-id
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u", Resume: true, SessionExists: func() bool { return exists }})
+	defer r.Close(context.Background())
+	if _, err := r.Ask(ctx5s(t), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close(context.Background())
+	exists = true
+	if _, err := r.Ask(ctx5s(t), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(must(os.ReadFile(filepath.Join(dir, "args.log"))))), "\n")
+	if !strings.Contains(lines[0], "--session-id u") || !strings.Contains(lines[1], "--resume u") {
+		t.Fatalf("應依 session 是否存在決定：%q", lines)
+	}
+}
+
+func must(b []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return b
+}

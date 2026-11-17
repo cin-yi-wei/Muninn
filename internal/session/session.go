@@ -94,6 +94,15 @@ func ProjectDir(claudeHome, workdir string) string {
 
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// Exists 回報 claude 是否真的存著這個 session（任何工作目錄底下都算，因為 --resume 跨目錄也接得到）。
+func Exists(claudeHome, id string) bool {
+	if !uuidRE.MatchString(id) {
+		return false
+	}
+	m, _ := filepath.Glob(filepath.Join(claudeHome, "projects", "*", id+".jsonl"))
+	return len(m) > 0
+}
+
 // Candidate 是工作目錄底下找到的一個既有 session。
 type Candidate struct {
 	ID      string

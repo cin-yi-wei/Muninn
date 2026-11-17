@@ -203,7 +203,7 @@ func (a *App) RunWorker(ctx context.Context) error {
 // finish 把回覆寫進 outbox，並把 inbox job 標成完成。
 func (a *App) finish(id string, job InboxJob, text string) error {
 	out := OutboxJob{ID: id, ChannelID: job.ChannelID, Text: text}
-	if a.QuoteReply {
+	if a.QuoteReply && job.AuthorID != SchedulerAuthor { // 排程訊息沒有真的 Discord 訊息可以回覆
 		out.ReplyTo = job.MessageID
 	}
 	if err := a.outbox.Put(out.ID, out); err != nil && !errors.Is(err, queue.ErrExists) {
