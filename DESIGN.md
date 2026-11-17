@@ -2,7 +2,7 @@
 
 > 重寫 claude_cron：拿掉 tmux，改用 headless `claude -p`。語言 Go。全新 repo。
 > 名字取自奧丁的記憶渡鴉 Muninn——每天飛出去打探、回來跟主人報告，正是 agent 派到各頻道跑完回報的畫面。（拆元件時「思想」渡鴉 Huginn 可留給另一半用。）
-> 狀態：M1、M2 完成（2026-11-17 實機驗過；M2 的「接手既有 session」只驗到單元測試與 adopt 指令，實機對話未測），下一步 M3。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
+> 狀態：M1～M3 完成（2026-11-17 實機驗過；M2 的「接手既有 session」只驗到單元測試與 adopt 指令，實機對話未測），下一步 M4。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
 
 ## 1. 為什麼重寫
 
@@ -90,3 +90,17 @@ claude_cron 開的 session 就是普通 claude session（`~/.claude/projects/<�
 - 單一 Gateway 連線正確分派：兩頻道各記各的暗號、互不串。
 - 兩個 binding 各自長駐一個 claude 程序（各自的 session id）。冷啟動第一則 7～8 秒，第二則 2.6～3.4 秒。
 - 接手 claude_cron 既有 session 的實機對話尚未測試（需要先停掉一個 claude_cron binding）。
+
+## 11. M3 實測紀錄（2026-11-17）
+
+- `--permission-prompt-tool` 協定實測：claude 送 `{tool_name, input, tool_use_id}`；回 `{"behavior":"allow","updatedInput":<原參數>}` 才會執行，回 deny 時 claude 會照實回報、不換方法硬做。
+- allow 一定要帶回原參數，給空物件 claude 會用空參數執行（單元測試抓到）。
+- 頻道確認：三顆按鈕（允許一次／允許並記住／拒絕）+ 文字 y / ya / n，實機按過可用；auto_approve 直接放行。
+- **使用者全域的 rtk hook 會在權限確認之前改寫指令**（`git status` → `rtk git status`），記住分類要把 rtk 當包裝跳過。
+- 事故：main 漏接 Prompter，權限請求 nil panic 讓 Muninn 連續崩潰 4 次，而且每次重啟都會回放同一則訊息。已修（啟動時檢查依賴、broker 攔 panic）。
+
+## 12. 留給 M4 的待辦
+
+- 同一則 job 反覆讓程序崩潰時會無限回放：要加重試上限（例如 3 次），超過就放棄並通知頻道。
+- 停止／重啟這類指令由 Muninn 自己攔截，不交給 claude（見 §9）。
+- 記憶體：每個 binding 約 500MB，閒置回收與上限以此估算。
