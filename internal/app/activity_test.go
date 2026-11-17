@@ -84,6 +84,89 @@ func TestPaginateByLength(t *testing.T) {
 	}
 }
 
+func TestToolBlockShowsChanges(t *testing.T) {
+	edit := toolBlock("Edit", json.RawMessage(`{"file_path":"/a.go","old_string":"x := 1\ny := 2","new_string":"x := 3"}`))
+	if edit != "```diff\n- x := 1\n- y := 2\n+ x := 3\n```" {
+		t.Fatalf("Edit 應顯示成 diff：%q", edit)
+	}
+	multi := toolBlock("MultiEdit", json.RawMessage(`{"file_path":"/a.go","edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d"}]}`))
+	if strings.Count(multi, "```diff") != 2 || !strings.Contains(multi, "- c\n+ d") {
+		t.Fatalf("MultiEdit 每處一個 diff：%q", multi)
+	}
+	win, _ := json.Marshal(map[string]string{"file_path": "/a.go", "content": "package a\n// 有 ``` 在裡面"})
+	write := toolBlock("Write", win)
+	if !strings.HasPrefix(write, "```\npackage a") || strings.Count(write, "```") != 2 {
+		t.Fatalf("Write 應顯示內容，內容裡的 ``` 不能把區塊關掉：%q", write)
+	}
+	if toolBlock("Bash", json.RawMessage(`{"command":"ls"}`)) != "" || toolBlock("Edit", json.RawMessage(`{}`)) != "" {
+		t.Fatal("非改檔工具或沒有內容時不該有區塊")
+	}
+	var big []string
+	for i := 0; i < 200; i++ {
+		big = append(big, fmt.Sprintf("line %d", i))
+	}
+	in, _ := json.Marshal(map[string]string{"old_string": "", "new_string": strings.Join(big, "\n")})
+	if b := toolBlock("Edit", in); !strings.Contains(b, "… (+120 行)") {
+		t.Fatalf("超過 %d 行要截斷並標出剩幾行：%q", diffMaxLines, b[len(b)-40:])
+	}
+}
+
+func TestSplitEntryKeepsFences(t *testing.T) {
+	var lines []string
+	for i := 0; i < 80; i++ {
+		lines = append(lines, "+ "+strings.Repeat("字", 60))
+	}
+	entry := "• `Edit` a.go\n```diff\n" + strings.Join(lines, "\n") + "\n```"
+	pieces := splitEntry(entry, activityEntryChars)
+	if len(pieces) < 2 {
+		t.Fatalf("長 diff 應拆成多段：%d", len(pieces))
+	}
+	total := 0
+	for i, p := range pieces {
+		if n := len([]rune(p)); n > activityEntryChars {
+			t.Fatalf("第 %d 段 %d 字超過上限", i, n)
+		}
+		if strings.Count(p, "```")%2 != 0 {
+			t.Fatalf("第 %d 段的程式碼區塊沒有成對：%q", i, p)
+		}
+		if i > 0 && !strings.HasPrefix(p, "```diff\n") {
+			t.Fatalf("續段要重開 diff 區塊：%q", p[:20])
+		}
+		total += strings.Count(p, "+ 字")
+	}
+	if total != 80 {
+		t.Fatalf("拆段後少了行：%d", total)
+	}
+	if got := splitEntry("短的", 100); len(got) != 1 || got[0] != "短的" {
+		t.Fatal(got)
+	}
+}
+
+func TestActivityFeedShowsEditDiff(t *testing.T) {
+	asker := toolAsker{tools: []runner.Activity{
+		tool("Edit", `{"file_path":"/repo/wt/internal/a.go","old_string":"old line","new_string":"new line"}`),
+	}}
+	snd, _ := runOne(t, asker, true)
+	// 總結可能是改寫既有訊息，也可能直接新發（整輪比第一次 flush 還快結束時）
+	var final string
+	waitFor(t, func() bool {
+		all := snd.editsSnapshot()
+		for _, s := range snd.snapshot() {
+			all = append(all, s.text)
+		}
+		for _, s := range all {
+			if strings.Contains(s, "✅ 完成，1 個步驟") {
+				final = s
+				return true
+			}
+		}
+		return false
+	})
+	if !strings.Contains(final, "• `Edit` internal/a.go\n```diff\n- old line\n+ new line\n```") {
+		t.Fatalf("旁白應顯示 Edit 的 diff：%q", final)
+	}
+}
+
 func TestActivityFeedRollsOver(t *testing.T) {
 	var tools []runner.Activity
 	n := activityPageSteps + 5

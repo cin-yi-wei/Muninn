@@ -30,7 +30,9 @@ type activityFeed struct {
 	start time.Time
 
 	mu     sync.Mutex
-	steps  []string
+	steps  []string // 顯示用的片段；一個工具呼叫可能拆成好幾段（diff 太長時）
+	stepNo []int    // 每個片段屬於第幾步（從 1 起）
+	n      int      // 工具呼叫次數
 	msgIDs []string // 每一頁對應的訊息 id（依序）
 	sent   []string // 每一頁最後一次送出的內容，沒變就不重送
 	dirty  bool
@@ -52,7 +54,15 @@ func (f *activityFeed) add(act runner.Activity) {
 	if wd := strings.TrimRight(f.a.Workdir, "/"); wd != "" {
 		step = strings.ReplaceAll(step, wd+"/", "")
 	}
-	f.steps = append(f.steps, step)
+	entry := "• " + step
+	if blk := toolBlock(act.Tool, act.Input); blk != "" {
+		entry += "\n" + blk
+	}
+	f.n++
+	for _, piece := range splitEntry(entry, activityEntryChars) {
+		f.steps = append(f.steps, piece)
+		f.stepNo = append(f.stepNo, f.n)
+	}
 	f.dirty = true
 	f.mu.Unlock()
 	select {
@@ -90,6 +100,7 @@ func (f *activityFeed) flush(summary string) {
 	}
 	f.dirty = false
 	steps := append([]string(nil), f.steps...)
+	stepNo := append([]int(nil), f.stepNo...)
 	ids := append([]string(nil), f.msgIDs...)
 	sent := append([]string(nil), f.sent...)
 	f.mu.Unlock()
@@ -98,7 +109,8 @@ func (f *activityFeed) flush(summary string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	for i, p := range pages {
-		text := renderPage(pageHeader(i, len(pages), p, summary), steps[p[0]:p[1]])
+		rng := [2]int{stepNo[p[0]], stepNo[p[1]-1]}
+		text := renderPage(pageHeader(i, len(pages), rng, summary), steps[p[0]:p[1]])
 		if i < len(ids) {
 			if text == sent[i] {
 				continue
@@ -130,7 +142,7 @@ func (f *activityFeed) flush(summary string) {
 func (f *activityFeed) finish(status string) {
 	f.mu.Lock()
 	f.closed = true
-	n := len(f.steps)
+	n := f.n
 	f.dirty = true
 	f.mu.Unlock()
 	close(f.wake)
@@ -147,7 +159,7 @@ func paginate(steps []string) [][2]int {
 	var pages [][2]int
 	start, chars := 0, 0
 	for i, s := range steps {
-		l := len([]rune(s)) + 3 // 「\n• 」
+		l := len([]rune(s)) + 1 // 加上換行
 		if i > start && (i-start >= activityPageSteps || chars+l > activityPageChars) {
 			pages = append(pages, [2]int{start, i})
 			start, chars = i, 0
@@ -161,8 +173,12 @@ func paginate(steps []string) [][2]int {
 }
 
 // pageHeader：前面的頁凍結成「步驟 a–b」；最後一頁是「工作中」或總結，多頁時附上範圍。
-func pageHeader(i, total int, p [2]int, summary string) string {
-	rng := fmt.Sprintf("步驟 %d–%d", p[0]+1, p[1])
+// steps 是這頁涵蓋的第一步與最後一步（從 1 起）。
+func pageHeader(i, total int, steps [2]int, summary string) string {
+	rng := fmt.Sprintf("步驟 %d–%d", steps[0], steps[1])
+	if steps[0] == steps[1] {
+		rng = fmt.Sprintf("步驟 %d", steps[0])
+	}
 	switch {
 	case i < total-1:
 		return "📜 " + rng
@@ -171,19 +187,131 @@ func pageHeader(i, total int, p [2]int, summary string) string {
 	case summary != "":
 		return summary
 	case total > 1:
-		return fmt.Sprintf("⏳ **工作中**（步驟 %d 起）", p[0]+1)
+		return fmt.Sprintf("⏳ **工作中**（步驟 %d 起）", steps[0])
 	default:
 		return "⏳ **工作中**"
 	}
 }
 
-func renderPage(header string, steps []string) string {
-	var b strings.Builder
-	b.WriteString(header)
-	for _, s := range steps {
-		b.WriteString("\n• " + s)
+func renderPage(header string, entries []string) string {
+	return header + "\n" + strings.Join(entries, "\n")
+}
+
+// 改檔內容的顯示上限（照 claude_cron 舊版）：每邊最多 diffMaxLines 行、每行 diffMaxCol 字，
+// 超過的顯示「… (+N 行)」。內容太長就拆成好幾則訊息，不截斷到看不見。
+const (
+	diffMaxLines = 80
+	diffMaxCol   = 400
+	// activityEntryChars：單一片段的字元上限，要比 activityPageChars 小，留空間給標題
+	activityEntryChars = 1700
+)
+
+// toolBlock 回傳改檔工具要附在步驟後面的程式碼區塊：Edit／MultiEdit 是 ```diff（- 舊、+ 新），
+// Write 是寫入的內容。其他工具回空字串。
+func toolBlock(tool string, input json.RawMessage) string {
+	var m map[string]any
+	_ = json.Unmarshal(input, &m)
+	s := func(mm map[string]any, k string) string { v, _ := mm[k].(string); return v }
+	switch tool {
+	case "Edit":
+		return diffBlock(s(m, "old_string"), s(m, "new_string"))
+	case "MultiEdit":
+		arr, _ := m["edits"].([]any)
+		var blocks []string
+		for _, e := range arr {
+			if em, ok := e.(map[string]any); ok {
+				if b := diffBlock(s(em, "old_string"), s(em, "new_string")); b != "" {
+					blocks = append(blocks, b)
+				}
+			}
+		}
+		return strings.Join(blocks, "\n")
+	case "Write":
+		lines := clampLines(s(m, "content"), diffMaxLines, diffMaxCol)
+		if len(lines) == 0 {
+			return ""
+		}
+		return "```\n" + strings.Join(lines, "\n") + "\n```"
 	}
+	return ""
+}
+
+func diffBlock(old, new string) string {
+	o := clampLines(old, diffMaxLines, diffMaxCol)
+	n := clampLines(new, diffMaxLines, diffMaxCol)
+	if len(o) == 0 && len(n) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("```diff\n")
+	for _, ln := range o {
+		b.WriteString("- " + ln + "\n")
+	}
+	for _, ln := range n {
+		b.WriteString("+ " + ln + "\n")
+	}
+	b.WriteString("```")
 	return b.String()
+}
+
+// clampLines 切成行並套用行數、行寬上限。內容裡的 ``` 換成 ˋˋˋ，免得提早關掉外層的程式碼區塊。
+func clampLines(s string, maxLines, maxCol int) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	var out []string
+	for i, ln := range lines {
+		if i >= maxLines {
+			out = append(out, fmt.Sprintf("… (+%d 行)", len(lines)-maxLines))
+			break
+		}
+		ln = strings.ReplaceAll(ln, "```", "ˋˋˋ")
+		if r := []rune(ln); len(r) > maxCol {
+			ln = string(r[:maxCol]) + "…"
+		}
+		out = append(out, ln)
+	}
+	return out
+}
+
+// splitEntry 把超過 max 字元的片段依行拆開；切點落在程式碼區塊裡時，
+// 前段補上收尾 ```、後段重開同一種區塊（```diff 或 ```），每段各自都能正常顯示。
+func splitEntry(entry string, max int) []string {
+	if len([]rune(entry)) <= max {
+		return []string{entry}
+	}
+	var out []string
+	var cur []string
+	curLen := 0
+	fence := "" // 目前所在區塊的開頭（例如 ```diff），空字串＝不在區塊裡
+	for _, ln := range strings.Split(entry, "\n") {
+		l := len([]rune(ln)) + 1
+		if len(cur) > 0 && curLen+l+4 > max { // +4 留給補上的 \n```
+			if fence != "" {
+				cur = append(cur, "```")
+			}
+			out = append(out, strings.Join(cur, "\n"))
+			cur, curLen = nil, 0
+			if fence != "" {
+				cur = append(cur, fence)
+				curLen = len([]rune(fence)) + 1
+			}
+		}
+		cur = append(cur, ln)
+		curLen += l
+		if strings.HasPrefix(ln, "```") {
+			if fence == "" {
+				fence = ln
+			} else {
+				fence = ""
+			}
+		}
+	}
+	if len(cur) > 0 {
+		out = append(out, strings.Join(cur, "\n"))
+	}
+	return out
 }
 
 // shortTool 把工具呼叫壓成一行。
