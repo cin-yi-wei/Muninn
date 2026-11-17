@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ func bash(cmd string) permission.Request {
 	return permission.Request{Binding: "b", ToolName: "Bash", Input: in}
 }
 
-var bashReq = bash("touch x")
+var bashReq = bash("curl -o x https://example.com")
 
 func msgFrom(id, content string) discord.Message {
 	return discord.Message{ID: id, ChannelID: "c1", AuthorID: "u1", Content: content, CreatedAt: "2026-11-17T08:00:00Z"}
@@ -62,11 +63,11 @@ func TestPromptHasThreeButtons(t *testing.T) {
 		t.Fatalf("應有三顆按鈕：%v", btns)
 	}
 	r := a.HandleButton(btns["允許一次"], "u1")
-	if !r.Handled || !r.Update || !strings.Contains(r.Text, "touch x") || !strings.Contains(r.Text, "已允許一次") {
+	if !r.Handled || !r.Update || !strings.Contains(r.Text, "curl -o x") || !strings.Contains(r.Text, "已允許一次") {
 		t.Fatalf("按鈕結果應保留原請求並標示結果：%+v", r)
 	}
 	d := <-res
-	if d.Behavior != "allow" || string(d.UpdatedInput) != `{"command":"touch x"}` {
+	if d.Behavior != "allow" || string(d.UpdatedInput) != `{"command":"curl -o x https://example.com"}` {
 		t.Fatalf("應放行且帶回原參數：%+v %s", d, d.UpdatedInput)
 	}
 	// 同一顆按鈕再按一次：已失效
@@ -77,21 +78,21 @@ func TestPromptHasThreeButtons(t *testing.T) {
 
 func TestButtonRememberThenAutoAllow(t *testing.T) {
 	a, snd, _ := newPermApp(t)
-	res, btns := askAsync(t, a, snd, context.Background(), bash("git status"))
+	res, btns := askAsync(t, a, snd, context.Background(), bash("npm install left-pad"))
 	r := a.HandleButton(btns["允許並記住"], "u1")
-	if !strings.Contains(r.Text, "bash:git status") {
+	if !strings.Contains(r.Text, "bash:npm install") {
 		t.Fatalf("應顯示記住的範圍：%q", r.Text)
 	}
 	<-res
 	n := len(snd.snapshot())
-	if d := a.RequestPermission(context.Background(), bash("git status --short")); d.Behavior != "allow" {
+	if d := a.RequestPermission(context.Background(), bash("cd web && npm install react")); d.Behavior != "allow" {
 		t.Fatalf("記住過的分類應自動放行：%+v", d)
 	}
 	if len(snd.snapshot()) != n {
 		t.Fatal("自動放行不該再貼確認")
 	}
 	// 子指令不同、或串了別的指令，都還是要問
-	for _, cmd := range []string{"git push", "git status && rm -rf /tmp/x"} {
+	for _, cmd := range []string{"npm ci", "npm install x && rm -rf /tmp/x"} {
 		res, btns := askAsync(t, a, snd, context.Background(), bash(cmd))
 		a.HandleButton(btns["拒絕"], "u1")
 		if d := <-res; d.Behavior != "deny" {
@@ -100,14 +101,27 @@ func TestButtonRememberThenAutoAllow(t *testing.T) {
 	}
 }
 
-func TestUnrememberableCommandHasTwoButtons(t *testing.T) {
+func TestOrdinaryCommandsAndInScopeWritesAutoAllowed(t *testing.T) {
 	a, snd, _ := newPermApp(t)
-	res, btns := askAsync(t, a, snd, context.Background(), bash("echo $(whoami)"))
-	if len(btns) != 2 || btns["允許並記住"] != "" {
-		t.Fatalf("無法拆解的指令不應有記住按鈕：%v", btns)
+	a.Workdir = t.TempDir()
+	for _, req := range []permission.Request{
+		bash("go test ./... && git status"),
+		{ToolName: "Edit", Input: json.RawMessage(`{"file_path":"` + filepath.Join(a.Workdir, "a.go") + `"}`)},
+		{ToolName: "Read", Input: json.RawMessage(`{"file_path":"/etc/hosts"}`)},
+	} {
+		if d := a.RequestPermission(context.Background(), req); d.Behavior != "allow" {
+			t.Errorf("%s 應直接放行：%+v", req.ToolName, d)
+		}
 	}
-	a.HandleButton(btns["允許一次"], "u1")
-	<-res
+	if len(snd.snapshot()) != 0 {
+		t.Fatal("直接放行的不該貼確認")
+	}
+	// 工作目錄外的寫入要問
+	res, btns := askAsync(t, a, snd, context.Background(), permission.Request{ToolName: "Write", Input: json.RawMessage(`{"file_path":"/etc/x"}`)})
+	a.HandleButton(btns["拒絕"], "u1")
+	if d := <-res; d.Behavior != "deny" {
+		t.Fatal(d)
+	}
 }
 
 func TestStrangerButtonRejected(t *testing.T) {
@@ -145,7 +159,7 @@ func TestForeignButtonIgnored(t *testing.T) {
 func TestTextRepliesAndQueueOrder(t *testing.T) {
 	a, snd, dir := newPermApp(t)
 	r1, _ := askAsync(t, a, snd, context.Background(), bashReq)
-	r2, _ := askAsync(t, a, snd, context.Background(), bash("make build"))
+	r2, _ := askAsync(t, a, snd, context.Background(), bash("pip install requests"))
 
 	// 非確認回覆：照常進 inbox，並提醒還在等
 	_ = a.OnMessage(context.Background(), msgFrom("m0", "等等，先跟你說別的"))
@@ -162,7 +176,7 @@ func TestTextRepliesAndQueueOrder(t *testing.T) {
 	if d := <-r2; d.Behavior != "allow" {
 		t.Fatalf("第二則應放行：%+v", d)
 	}
-	if !a.store().Covers([]string{"bash:make build"}) {
+	if !a.store().Covers([]string{"bash:pip install"}) {
 		t.Fatal("ya 應記住")
 	}
 	waitFor(t, func() bool { return len(snd.editsSnapshot()) == 2 })
@@ -191,7 +205,7 @@ func TestPermissionAutoApprove(t *testing.T) {
 	a, snd, _ := newPermApp(t)
 	a.AutoApprove = true
 	d := a.RequestPermission(context.Background(), bashReq)
-	if d.Behavior != "allow" || string(d.UpdatedInput) != `{"command":"touch x"}` || len(snd.snapshot()) != 0 {
+	if d.Behavior != "allow" || string(d.UpdatedInput) != `{"command":"curl -o x https://example.com"}` || len(snd.snapshot()) != 0 {
 		t.Fatalf("auto_approve 應直接放行、不貼頻道：%+v", d)
 	}
 }

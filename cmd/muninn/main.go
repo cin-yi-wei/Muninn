@@ -245,6 +245,7 @@ func cmdRun(cfgPath string) error {
 			Schedules:         scheduler.NewStore(stateDir, cfg.Timezone),
 			Activity:          b.ActivityOn(),
 			Workdir:           b.Workdir(),
+			Repo:              b.Repo,
 			MaxAttempts:       cfg.MaxAttempts,
 			StallTimeout:      cfg.Stall(),
 			Logf:              logger.Printf,

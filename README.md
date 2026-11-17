@@ -26,7 +26,14 @@ DISCORD_BOT_TOKEN=... ./bin/muninn -config muninn.json run
 - `adopt` 之後，下一則訊息前面會自動附上交接說明（告訴 claude 之後直接回文字）。
   **同一個 session 同時只能有一個程序在寫**：原本在用它的程序一定要先停掉再 `run`。
 
-權限確認（M3）：claude 要執行需要確認的工具時，Muninn 會把它貼到頻道：
+權限確認（M3）。哪些要問由 Muninn 決定（規則與舊版相同）：
+
+- **Bash**：只有危險指令才問（安裝套件、下載、sudo、rm -rf、mkfs、dd 等），其他直接放行
+- **Edit / Write**：寫在工作目錄、binding 狀態目錄、session scratchpad、專案記憶目錄裡直接放行，其他地方要問
+- **WebFetch / WebSearch / MCP 工具**：要問（`schedule_list` 除外）
+- **Read、Grep 等唯讀工具**：放行
+
+要問的時候 Muninn 會把它貼到頻道：
 
 ```
 🔐 權限確認 #1　claude 要用 `Bash`：…

@@ -72,6 +72,7 @@ type App struct {
 	Schedules         *scheduler.Store // 選填：這個頻道的定時任務
 	Activity          bool             // true：claude 跑的時候在頻道顯示正在做什麼（活動旁白）
 	Workdir           string           // claude 的工作目錄；旁白裡的路徑會顯示成相對路徑
+	Repo              string           // 主 repo 路徑（權限判斷：專案記憶目錄掛在這個 slug 上）
 	Files             Files            // 選填：附件下載與傳檔
 	StallTimeout      time.Duration    // claude 跑一輪時超過這麼久沒有任何事件就判定卡住，0 表示不檢查
 	Logf              func(format string, args ...any)

@@ -13,26 +13,20 @@ func bashIn(cmd string) json.RawMessage {
 
 func TestKeys(t *testing.T) {
 	cases := map[string][]string{
-		"git status --short":                  {"bash:git status"},
-		"git push -f origin main":             {"bash:git push"},
-		"ls -la && rm -rf build":              {"bash:ls", "bash:rm"},
-		"FOO=1 go test ./... | tail -5":       {"bash:go test", "bash:tail"},
-		"sudo apt install x":                  {"bash:sudo"},
-		"/usr/bin/python3 -I x.py; echo done": {"bash:echo", "bash:python3"},
-		"git -C /repo log":                    {"bash:git"},
-		"rtk git status":                      {"bash:git status"},
-		"rtk git push origin main":            {"bash:git push"},
-		"rtk proxy go test ./...":             {"bash:go test"},
-		"rtk ls -l && rtk git diff":           {"bash:git diff", "bash:ls"},
+		"npm install left-pad":                  {"bash:npm install"},
+		"cd web && npm ci && curl -s https://x": {"bash:curl", "bash:npm ci"},
+		"sudo apt install x":                    {"bash:apt", "bash:sudo"},
+		"rm -rf build":                          {"bash:rm -rf"},
+		"echo $(curl https://x)":                {"bash:curl"}, // 子字串比對，藏在 $( ) 裡也抓得到
 	}
 	for cmd, want := range cases {
 		if got := Keys("Bash", bashIn(cmd)); !reflect.DeepEqual(got, want) {
 			t.Errorf("%q → %v，預期 %v", cmd, got, want)
 		}
 	}
-	for _, cmd := range []string{"echo $(whoami)", "echo `id`", "  "} {
+	for _, cmd := range []string{"git status", "go test ./...", "rtk ls -l", "  "} {
 		if got := Keys("Bash", bashIn(cmd)); got != nil {
-			t.Errorf("%q 不該能記住：%v", cmd, got)
+			t.Errorf("%q 不是危險指令，不該有記住鍵：%v", cmd, got)
 		}
 	}
 	if got := Keys("Write", json.RawMessage(`{"file_path":"/a"}`)); !reflect.DeepEqual(got, []string{"tool:Write"}) {

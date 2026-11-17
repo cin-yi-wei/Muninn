@@ -93,6 +93,10 @@ func (a *App) RequestPermission(ctx context.Context, req permission.Request) per
 	if req.ToolName == "mcp__"+permission.ServerName+"__schedule_list" {
 		return permission.Allow(req.Input) // 唯讀，不用問
 	}
+	if ask, why := permission.NeedsApproval(req.ToolName, req.Input, a.scope()); !ask {
+		a.logf("permission: 放行 %s（%s）", req.ToolName, why)
+		return permission.Allow(req.Input)
+	}
 	keys := permission.Keys(req.ToolName, req.Input)
 	if a.store().Covers(keys) {
 		a.logf("permission: 已記住 %v，放行", keys)
@@ -296,4 +300,8 @@ func (a *App) handlePermReply(content string) bool {
 		a.notify(fmt.Sprintf("%s（#%d）", line, p.n)) // 確認訊息可能已被洗上去，補一則短訊
 	}()
 	return true
+}
+
+func (a *App) scope() permission.Scope {
+	return permission.Scope{Workdir: a.Workdir, Repo: a.Repo, StateDir: a.StateDir}
 }
