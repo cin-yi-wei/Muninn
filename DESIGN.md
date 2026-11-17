@@ -2,7 +2,7 @@
 
 > 重寫 claude_cron：拿掉 tmux，改用 headless `claude -p`。語言 Go。全新 repo。
 > 名字取自奧丁的記憶渡鴉 Muninn——每天飛出去打探、回來跟主人報告，正是 agent 派到各頻道跑完回報的畫面。（拆元件時「思想」渡鴉 Huginn 可留給另一半用。）
-> 狀態：M1 完成（2026-11-17 實機驗過），下一步 M2。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
+> 狀態：M1、M2 完成（2026-11-17 實機驗過；M2 的「接手既有 session」只驗到單元測試與 adopt 指令，實機對話未測），下一步 M3。拍板：長駐 session + 閒置回收、訊息佇列留檔案、里程碑 M1→M5 照走。
 
 ## 1. 為什麼重寫
 
@@ -83,3 +83,10 @@ claude_cron 開的 session 就是普通 claude session（`~/.claude/projects/<�
 - 程序要自成 process group，取消時整組砍，否則子程序握著 stdout 會卡住讀取端。
 - 在 Muninn 裡要 claude「把 Muninn 停掉」，它會拒絕（判斷自己跑在裡面）。停止／重啟這類指令應由 Muninn 自己攔截處理（M4 supervisor），不要交給 claude。
 - `-p` 模式沒有權限 MCP 時，工作目錄外的讀取會被直接拒絕，要等 M3。
+
+## 10. M2 實測紀錄（2026-11-17）
+
+- 兩個測試頻道各綁一個 binding，worktree 由 Muninn 啟動時自動 `git worktree add` 建立（分支從 main 開）。
+- 單一 Gateway 連線正確分派：兩頻道各記各的暗號、互不串。
+- 兩個 binding 各自長駐一個 claude 程序（各自的 session id）。冷啟動第一則 7～8 秒，第二則 2.6～3.4 秒。
+- 接手 claude_cron 既有 session 的實機對話尚未測試（需要先停掉一個 claude_cron binding）。
