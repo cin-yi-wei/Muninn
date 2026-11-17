@@ -37,8 +37,11 @@ type Config struct {
 	DiscordGuild    string `json:"discord_guild"`
 	DiscordCategory string `json:"discord_category"`
 	// WorktreeRoot：bind 沒指定 worktree 時放在這底下（<root>/<name>），預設 <state_dir>/worktrees
-	WorktreeRoot string    `json:"worktree_root"`
-	Bindings     []Binding `json:"bindings"`
+	WorktreeRoot string `json:"worktree_root"`
+	// MaxTasks：委派任務同時執行的上限，預設 3；TaskTimeout：單一任務最長時間，預設 60m
+	MaxTasks    int       `json:"max_tasks"`
+	TaskTimeout string    `json:"task_timeout"`
+	Bindings    []Binding `json:"bindings"`
 }
 
 // Binding 是一個頻道的綁定。
@@ -124,6 +127,15 @@ func Load(path string) (Config, error) {
 	if c.PermissionTimeout == "" {
 		c.PermissionTimeout = "30m"
 	}
+	if c.MaxTasks <= 0 {
+		c.MaxTasks = 3
+	}
+	if c.TaskTimeout == "" {
+		c.TaskTimeout = "60m"
+	}
+	if d, err := time.ParseDuration(c.TaskTimeout); err != nil || d <= 0 {
+		return Config{}, fmt.Errorf("registry: task_timeout %q 不是合法的時間長度", c.TaskTimeout)
+	}
 	if c.StallTimeout == "" {
 		c.StallTimeout = "20m"
 	}
@@ -191,6 +203,12 @@ func Load(path string) (Config, error) {
 		names[b.Name], channels[b.Platform+":"+b.ChannelID] = true, true
 	}
 	return c, nil
+}
+
+// TaskLimit 回傳解析後的 task_timeout。
+func (c Config) TaskLimit() time.Duration {
+	d, _ := time.ParseDuration(c.TaskTimeout)
+	return d
 }
 
 // Stall 回傳解析後的 stall_timeout，0 表示不檢查。

@@ -36,6 +36,8 @@ type Request struct {
 	ToolName  string          `json:"tool_name"`
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
+	// Label 是主程序內部加的前綴（例如委派任務轉來的確認），不從 MCP 來
+	Label string `json:"-"`
 }
 
 // Decision 是回給 claude 的決策，格式即 --permission-prompt-tool 要求的 JSON。
@@ -61,6 +63,15 @@ func MCPConfig(exe, socket, binding string, control bool) string {
 	if control {
 		args = append(args, "--control")
 	}
+	return mcpJSON(exe, args)
+}
+
+// TaskMCPConfig 是委派任務用的 MCP：只有權限確認，沒有頻道工具（任務不能排程、傳檔、再委派）。
+func TaskMCPConfig(exe, socket, binding string) string {
+	return mcpJSON(exe, []string{"permission-mcp", "--socket", socket, "--binding", binding, "--no-tools"})
+}
+
+func mcpJSON(exe string, args []string) string {
 	cfg := map[string]any{"mcpServers": map[string]any{
 		ServerName: map[string]any{"command": exe, "args": args},
 	}}
@@ -164,7 +175,8 @@ type rpcMsg struct {
 }
 
 // ServeMCP 在 in/out 上講 MCP（newline-delimited JSON-RPC），把 tools/call 轉給 socket 上的 Broker。
-func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding string, control bool) error {
+func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding string, control bool, noTools ...bool) error {
+	bare := len(noTools) > 0 && noTools[0]
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
 	enc := json.NewEncoder(out)
@@ -203,6 +215,9 @@ func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding 
 				},
 			}}
 			for _, t := range Tools {
+				if bare {
+					break
+				}
 				tools = append(tools, t)
 			}
 			if control {
@@ -217,7 +232,7 @@ func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding 
 				Arguments json.RawMessage `json:"arguments"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
-			if IsChannelTool(p.Name) || (control && IsControlTool(p.Name)) {
+			if !bare && (IsChannelTool(p.Name) || (control && IsControlTool(p.Name))) {
 				res := callTool(ctx, socket, binding, p.Name, p.Arguments)
 				err = reply(m.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": res.Text}}, "isError": res.IsError})
 				break

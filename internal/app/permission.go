@@ -90,11 +90,22 @@ func (a *App) RequestPermission(ctx context.Context, req permission.Request) per
 		a.logf("permission: auto_approve 放行 %s", req.ToolName)
 		return permission.Allow(req.Input)
 	}
-	if req.ToolName == "mcp__"+permission.ServerName+"__schedule_list" {
+	switch req.ToolName {
+	case "mcp__muninn__schedule_list", "mcp__muninn__task_list", "mcp__muninn__task_status":
 		return permission.Allow(req.Input) // 唯讀，不用問
 	}
 	if ask, why := permission.NeedsApproval(req.ToolName, req.Input, a.scope()); !ask {
 		a.logf("permission: 放行 %s（%s）", req.ToolName, why)
+		return permission.Allow(req.Input)
+	}
+	return a.RequestPermissionAsked(ctx, req)
+}
+
+// RequestPermissionAsked 跳過「要不要問」的判斷（呼叫端已經判斷過要問，例如委派任務用自己的範圍判斷），
+// 照 auto_approve、記住、貼頻道確認的順序處理。
+func (a *App) RequestPermissionAsked(ctx context.Context, req permission.Request) permission.Decision {
+	if a.AutoApprove {
+		a.logf("permission: auto_approve 放行 %s", req.ToolName)
 		return permission.Allow(req.Input)
 	}
 	keys := permission.Keys(req.ToolName, req.Input)
@@ -106,7 +117,11 @@ func (a *App) RequestPermission(ctx context.Context, req permission.Request) per
 	a.perm.mu.Lock()
 	a.perm.counter++
 	p := &pendingPerm{id: randomID(), n: a.perm.counter, keys: keys, ch: make(chan permission.Decision, 1)}
-	p.desc = fmt.Sprintf("🔐 **權限確認 #%d**　claude 要用 %s", p.n, permission.Describe(req.ToolName, req.Input))
+	who := "claude"
+	if req.Label != "" {
+		who = req.Label
+	}
+	p.desc = fmt.Sprintf("🔐 **權限確認 #%d**　%s 要用 %s", p.n, who, permission.Describe(req.ToolName, req.Input))
 	a.perm.queue = append(a.perm.queue, p)
 	a.perm.mu.Unlock()
 
@@ -235,6 +250,9 @@ func (a *App) edit(p *pendingPerm, line string) {
 }
 
 // notify 送一則系統短訊到頻道，失敗只記 log。
+// Notify 在頻道貼一則系統短訊（給 daemon、任務管理用）。
+func (a *App) Notify(text string) { a.notify(text) }
+
 func (a *App) notify(text string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

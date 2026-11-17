@@ -59,6 +59,38 @@ var Tools = []map[string]any{
 		}, "path"),
 	},
 	{
+		"name": "delegate",
+		"description": "把一件事委派給另一個獨立的 claude（子任務 agent）在背景做，立刻返回，不用等。" +
+			"子任務在自己的 git worktree（從你目前的 commit 開新分支）裡工作，做完後結果會自動送進這個對話，你再整理給使用者。" +
+			"適合：耗時的調查、平行處理、要隔離的實驗、讓另一雙眼睛審查。task 要寫成完整、可獨立執行的指示（子任務看不到這個對話）。",
+		"inputSchema": obj(map[string]any{
+			"task":  str("要做的事：完整指示，包含背景、範圍、要回報什麼"),
+			"title": str("簡短標題，選填"),
+			"role":  str("角色，預設 general。" + "可用：researcher（查證附出處，不改檔）、reviewer（審查找問題，不改檔）、implementer（照規格實作、先寫測試、commit）、tester（補測試、commit）、general"),
+			"level": str("readonly（預設，寫檔工具停用）或 develop（可以改檔、commit）"),
+		}, "task"),
+	},
+	{
+		"name":        "task_list",
+		"description": "列出這個頻道委派過的任務與狀態。",
+		"inputSchema": obj(map[string]any{}),
+	},
+	{
+		"name":        "task_status",
+		"description": "查一個委派任務的詳細狀態與結果。",
+		"inputSchema": obj(map[string]any{"id": str("任務 id")}, "id"),
+	},
+	{
+		"name":        "task_followup",
+		"description": "對已結束的任務追問或補充指示：同一個子 claude（保有之前的脈絡）在同一個分支上接著做，結果同樣會送回這裡。",
+		"inputSchema": obj(map[string]any{"id": str("任務 id"), "message": str("追問或補充的指示")}, "id", "message"),
+	},
+	{
+		"name":        "task_cancel",
+		"description": "取消一個排隊中或執行中的任務。",
+		"inputSchema": obj(map[string]any{"id": str("任務 id")}, "id"),
+	},
+	{
 		"name":        "schedule_list",
 		"description": "列出這個頻道所有定時任務與下次觸發時間。",
 		"inputSchema": obj(map[string]any{}),
@@ -128,6 +160,7 @@ type ToolHandler func(ctx context.Context, binding, method string, input json.Ra
 // claude -p 仍會載入使用者全域的 skill、CLAUDE.md；裡面可能教它用別的排程機制（例如別套系統的 CLI）。
 // 實測過：不講清楚的話，claude 會照全域 skill 去別的系統建排程，而不是用 Muninn 的工具。
 const SystemPrompt = `你現在由 Muninn 驅動，對應一個聊天頻道：使用者在頻道傳的訊息會送進來，你的最終回覆文字會直接貼回頻道。
+需要平行處理、耗時調查、隔離實驗或第二雙眼睛審查時，可以用 mcp__muninn__delegate 委派給子任務 agent；結果會自動送回這個對話。
 使用者傳來的附件會下載到本機，訊息裡會附上路徑。要把檔案給使用者，用 mcp__muninn__send_file。
 定時任務、提醒、排程一律使用 Muninn 提供的 MCP 工具 mcp__muninn__schedule_add / schedule_list / schedule_remove / schedule_pause / schedule_run_now，它們只作用在這個頻道。
 不要用其他任何排程機制（系統 crontab、at、其他工具的 CLI、全域 skill 介紹的排程方式、內建的 Cron 工具等）來做這件事，就算其他說明這樣教也一樣。`

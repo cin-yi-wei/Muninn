@@ -132,6 +132,18 @@ claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出
   訊息留在佇列（不算嘗試次數），每 5 分鐘重試；恢復後通知並接著處理。
 - Muninn 主程序本身建議用 systemd 跑，並設 `Restart=on-failure`、`MemoryMax=`。
 
+## 委派（agent-to-agent）
+
+頻道裡的 claude 可以用 `delegate` 工具把一件事交給另一個獨立的 claude 在背景做（不用等）：
+
+- 每個任務自己一個 git worktree（分支 `muninn-task-<id>`，從委派者目前的 commit 開）和自己的 session。
+- 角色：`general`、`researcher`（查證附出處）、`reviewer`（審查找問題）、`implementer`（先寫測試再實作、commit）、`tester`（補測試、commit）。
+- 權限等級：`readonly`（預設；寫檔工具停用，Bash 只能跑唯讀指令）或 `develop`（可以改檔、commit；危險操作轉到委派者的頻道讓人按確認）。
+- 做完、失敗、取消都會把報告（含分支上的新 commit）送回委派者的對話，claude 會整理給使用者；頻道也會貼一行狀態。
+- `task_followup` 對同一個子 claude 接著問、`task_cancel` 取消、`task_list`／`task_status` 查詢；頻道打 `!tasks` 看清單。
+- 同時執行上限 `max_tasks`（預設 3，超過排隊），單一任務上限 `task_timeout`（預設 60m）。任務不能再委派。
+- 任務結束時移除 worktree（沒提交的改動先 wip commit），分支保留；Muninn 重啟時執行中的任務標成中斷並通知。
+
 ## 建置、安裝、檢查
 
 ```sh

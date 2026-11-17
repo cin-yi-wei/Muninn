@@ -6,6 +6,8 @@
   "permission_timeout": "30m",
   "idle_timeout": "30m",
   "stall_timeout": "20m",
+  "max_tasks": 3,
+  "task_timeout": "60m",
   "memory_limit_mb": 2048,
   "max_attempts": 3,
   "timezone": "Asia/Taipei",

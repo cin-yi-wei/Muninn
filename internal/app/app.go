@@ -81,6 +81,7 @@ type App struct {
 	Name              string           // binding 名稱（自己暫停時用）
 	Admin             AdminOps         // 選填：控制頻道才有，管理所有 binding
 	Pauser            SelfPauser       // 選填：讓頻道用 !pause 暫停自己
+	Tasks             TaskOps          // 選填：委派（delegate 與 task_* 工具）
 	Files             Files            // 選填：附件下載與傳檔
 	StallTimeout      time.Duration    // claude 跑一輪時超過這麼久沒有任何事件就判定卡住，0 表示不檢查
 	Logf              func(format string, args ...any)
@@ -255,7 +256,7 @@ func (a *App) RunWorker(ctx context.Context) error {
 // finish 把回覆寫進 outbox，並把 inbox job 標成完成。
 func (a *App) finish(id string, job InboxJob, text string) error {
 	out := OutboxJob{ID: id, ChannelID: job.ChannelID, Text: text}
-	if a.QuoteReply && job.AuthorID != SchedulerAuthor { // 排程訊息沒有真的 Discord 訊息可以回覆
+	if a.QuoteReply && job.AuthorID != SchedulerAuthor && job.AuthorID != TaskAuthor { // 排程訊息沒有真的 Discord 訊息可以回覆
 		out.ReplyTo = job.MessageID
 	}
 	if err := a.outbox.Put(out.ID, out); err != nil && !errors.Is(err, queue.ErrExists) {

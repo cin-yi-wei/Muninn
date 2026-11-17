@@ -231,6 +231,7 @@ func cmdPermissionMCP(args []string) error {
 	socket := fs.String("socket", "", "主程序的權限 socket")
 	binding := fs.String("binding", "", "binding 名稱")
 	control := fs.Bool("control", false, "控制頻道：多掛管理 binding 的工具")
+	noTools := fs.Bool("no-tools", false, "委派任務用：只有權限確認，沒有頻道工具")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -239,7 +240,7 @@ func cmdPermissionMCP(args []string) error {
 	}
 	// stdout 是 MCP 通道，log 一律走 stderr
 	log.SetOutput(os.Stderr)
-	return permission.ServeMCP(context.Background(), os.Stdin, os.Stdout, *socket, *binding, *control)
+	return permission.ServeMCP(context.Background(), os.Stdin, os.Stdout, *socket, *binding, *control, *noTools)
 }
 
 func cmdSchedules(cfgPath string) error {

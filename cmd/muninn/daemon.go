@@ -24,6 +24,7 @@ import (
 	"muninn/internal/runner"
 	"muninn/internal/scheduler"
 	"muninn/internal/session"
+	"muninn/internal/tasks"
 	"muninn/internal/telegram"
 	"muninn/internal/worktree"
 )
@@ -38,6 +39,7 @@ type daemon struct {
 	discord    *discord.REST
 	tg         *telegram.Bot
 	admin      *admin.Admin
+	tasks      *tasks.Manager
 
 	root context.Context
 
@@ -102,6 +104,28 @@ func cmdRun(cfgPath string) error {
 	defer stop()
 	d.root = ctx
 	g, gctx := errgroup.WithContext(ctx)
+
+	// 委派任務：每個任務一個獨立的 headless claude，權限確認轉到委派者的頻道
+	d.tasks = &tasks.Manager{
+		StateDir: filepath.Join(cfg.StateDir, "tasks"), MaxRunning: cfg.MaxTasks, TaskTimeout: cfg.TaskLimit(),
+		NewAsker: d.newTaskAsker,
+		Deliver: func(source, id, text string) error {
+			a := d.byName(source)
+			if a == nil {
+				return fmt.Errorf("binding %s 已停止", source)
+			}
+			return a.DeliverTaskResult(id, text)
+		},
+		Notify: func(source, text string) {
+			if a := d.byName(source); a != nil {
+				a.Notify(text)
+			}
+		},
+		Logf: log.Printf,
+	}
+	if err := d.tasks.Start(ctx); err != nil {
+		return err
+	}
 
 	// 先把所有 binding 接線一遍（缺依賴時 App.Init 會報錯），再檢查 token
 	d.apply(cfg)
@@ -299,6 +323,9 @@ func (d *daemon) startBinding(cfg registry.Config, b registry.Binding) (*liveBin
 	a.Name, a.Pauser = b.Name, d.admin
 	if b.Control {
 		a.Admin = d.admin
+	}
+	if d.tasks != nil {
+		a.Tasks = d.tasks
 	}
 	if err := a.Init(); err != nil {
 		return nil, err
@@ -511,6 +538,9 @@ func (d *daemon) byName(name string) *app.App {
 }
 
 func (d *daemon) handlePermission(ctx context.Context, req permission.Request) permission.Decision {
+	if id, ok := strings.CutPrefix(req.Binding, "task:"); ok {
+		return d.taskPermission(ctx, id, req)
+	}
 	a := d.byName(req.Binding)
 	if a == nil {
 		return permission.Deny("binding " + req.Binding + " 已停止")
@@ -519,9 +549,74 @@ func (d *daemon) handlePermission(ctx context.Context, req permission.Request) p
 }
 
 func (d *daemon) handleTool(ctx context.Context, binding, method string, input json.RawMessage) permission.ToolResult {
+	if strings.HasPrefix(binding, "task:") {
+		return permission.ToolResult{Text: "委派任務不能用頻道工具", IsError: true}
+	}
 	a := d.byName(binding)
 	if a == nil {
 		return permission.ToolResult{Text: "binding " + binding + " 已停止", IsError: true}
 	}
 	return a.HandleTool(method, input)
+}
+
+// newTaskAsker 建立跑委派任務的 claude：工作目錄是任務 worktree，MCP 只有權限確認。
+func (d *daemon) newTaskAsker(t tasks.Task, extra []string) tasks.Asker {
+	d.mu.RLock()
+	cfg := d.cfg
+	src, ok := cfg.Find(t.Source)
+	d.mu.RUnlock()
+	model := ""
+	if ok {
+		model = src.Model
+	}
+	args := append([]string{
+		"--mcp-config", permission.TaskMCPConfig(d.exe, d.socket, "task:"+t.ID),
+		"--strict-mcp-config", // 任務只掛 Muninn 的權限 MCP，不帶使用者其他的 MCP server
+		"--permission-prompt-tool", permission.PromptTool,
+	}, extra...)
+	sid := t.SessionID
+	return runner.New(runner.Config{
+		SessionExists: func() bool { return session.Exists(d.claudeHome, sid) },
+		Bin:           cfg.ClaudeBin,
+		Workdir:       t.Worktree,
+		SessionID:     t.SessionID,
+		Model:         model,
+		ExtraArgs:     args,
+	})
+}
+
+// taskPermission 判斷委派任務的工具呼叫：範圍內的直接放行；要問的轉到委派者的頻道
+// （readonly 任務不轉，直接拒絕）。
+func (d *daemon) taskPermission(ctx context.Context, id string, req permission.Request) permission.Decision {
+	t, ok := d.tasks.Lookup(id)
+	if !ok || !t.Active() {
+		return permission.Deny("任務 " + id + " 已結束")
+	}
+	if t.Level == tasks.LevelReadonly && req.ToolName == "Bash" {
+		// readonly 任務的 Bash 只放行唯讀指令（寫檔工具已停用，但 Bash 也能寫檔）
+		var in struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(req.Input, &in)
+		if permission.ReadonlyBash(in.Command) {
+			return permission.Allow(req.Input)
+		}
+		log.Printf("[task %s] readonly 拒絕 Bash：%s", id, in.Command)
+		return permission.Deny("readonly 任務只能跑唯讀指令（ls、cat、rg、git log/diff/show…），不能寫檔或執行其他程式")
+	}
+	scope := permission.Scope{Workdir: t.Worktree, Repo: t.Repo}
+	ask, why := permission.NeedsApproval(req.ToolName, req.Input, scope)
+	if !ask {
+		log.Printf("[task %s] 放行 %s（%s）", id, req.ToolName, why)
+		return permission.Allow(req.Input)
+	}
+	if t.Level == tasks.LevelReadonly {
+		return permission.Deny("readonly 任務不能做這個操作（" + req.ToolName + "）；需要的話請委派者改用 develop 重新委派")
+	}
+	a := d.byName(t.Source)
+	if a == nil {
+		return permission.Deny("委派者的頻道已停止，沒有人能核准")
+	}
+	req.Label = fmt.Sprintf("委派任務 `%s`（%s）", id, t.Title)
+	return a.RequestPermissionAsked(ctx, req)
 }

@@ -108,6 +108,9 @@ func (a *App) HandleTool(method string, input json.RawMessage) permission.ToolRe
 	if strings.HasPrefix(method, "binding_") {
 		return a.adminTool(method, input)
 	}
+	if method == "delegate" || strings.HasPrefix(method, "task_") {
+		return a.taskTool(method, input)
+	}
 	if a.Schedules == nil {
 		return toolErr("這個頻道沒有啟用定時任務")
 	}

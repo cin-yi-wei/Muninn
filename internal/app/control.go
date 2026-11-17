@@ -22,6 +22,7 @@ const helpText = "**Muninn 指令**（不會交給 claude）\n" +
 	"`!cancel`：中斷 claude 正在跑的這一輪（session 保留）\n" +
 	"`!restart`：中斷並重啟 claude 程序（session 保留，下一則訊息會 --resume）\n" +
 	"`!schedules`：列出這個頻道的定時任務（要新增、修改直接跟 claude 說）\n" +
+	"`!tasks`：列出這個頻道委派出去的子任務\n" +
 	"`!pause`：暫停這個頻道（claude 停掉，worktree 與對話保留；之後打 `!resume` 恢復）\n" +
 	"`!help`：這份說明"
 
@@ -61,6 +62,12 @@ func (a *App) handleCommand(content string) bool {
 			go a.notify(helpText + "\n\n" + controlHelp)
 		} else {
 			go a.notify(helpText)
+		}
+	case "!tasks":
+		if a.Tasks == nil {
+			go a.notify("這個頻道沒有啟用委派")
+		} else {
+			go a.notify("🛰 **委派任務**\n" + a.taskList())
 		}
 	case "!schedules":
 		if a.Schedules == nil {

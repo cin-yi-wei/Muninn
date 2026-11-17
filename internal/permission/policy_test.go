@@ -54,3 +54,32 @@ func TestNeedsApproval(t *testing.T) {
 		}
 	}
 }
+
+func TestReadonlyBash(t *testing.T) {
+	for cmd, ro := range map[string]bool{
+		"ls -la":                          true,
+		"cat README.md | head -5":         true,
+		"rg foo src && git log --oneline": true,
+		"git status --short 2>&1":         true,
+		"rtk git diff HEAD~1":             true,
+		"rtk read README.md":              true,
+		"rtk err make build":              false,
+		"sed -n 1,20p a.go":               true,
+		"echo hello > note.txt":           false,
+		"cat a >> b":                      false,
+		"git commit -am x":                false,
+		"git checkout main":               false,
+		"rm a.txt":                        false,
+		"touch x":                         false,
+		"sed -i s/a/b/ f":                 false,
+		"find . -name x -delete":          false,
+		"echo $(rm -rf x)":                false,
+		"python3 -c 'open(1)'":            false,
+		"go test ./...":                   false,
+		"ls >/dev/null":                   true,
+	} {
+		if got := ReadonlyBash(cmd); got != ro {
+			t.Errorf("%q：readonly=%v，預期 %v", cmd, got, ro)
+		}
+	}
+}

@@ -120,3 +120,65 @@ func NeedsApproval(tool string, input json.RawMessage, scope Scope) (ask bool, r
 	}
 	return false, "唯讀工具"
 }
+
+// readonlyCommands 是 readonly 任務可以跑的指令（第一個字）。不在清單上的一律拒絕。
+var readonlyCommands = map[string]bool{
+	"ls": true, "cat": true, "head": true, "tail": true, "wc": true, "grep": true, "rg": true, "find": true,
+	"tree": true, "file": true, "stat": true, "du": true, "pwd": true, "echo": true, "printf": true, "which": true,
+	"sort": true, "uniq": true, "cut": true, "diff": true, "jq": true, "awk": true, "basename": true, "dirname": true,
+	"realpath": true, "date": true, "true": true, "test": true, "[": true, "cd": true, "sha256sum": true, "md5sum": true,
+	// rtk 的唯讀子指令（使用者全域的 rtk hook 會把 cat 改寫成 rtk read 之類）
+	"read": true, "json": true, "log": true,
+}
+
+// readonlyGit 是 readonly 任務可以跑的 git 子指令。
+var readonlyGit = map[string]bool{
+	"status": true, "log": true, "diff": true, "show": true, "blame": true, "branch": true, "rev-parse": true,
+	"ls-files": true, "grep": true, "describe": true, "shortlog": true, "cat-file": true, "ls-tree": true,
+}
+
+var segSplit = regexp.MustCompile(`&&|\|\||;|\||\n`)
+
+// ReadonlyBash 判斷一條 Bash 指令是否只讀：每一段都在唯讀清單上，而且沒有輸出導向、
+// 子指令替換（$( )、反引號）、sed -i 這類就地修改。判斷不了的一律當成不是唯讀。
+func ReadonlyBash(cmd string) bool {
+	if strings.TrimSpace(cmd) == "" || strings.Contains(cmd, "$(") || strings.Contains(cmd, "`") {
+		return false
+	}
+	// 輸出導向：> 或 >>（允許 2>&1、>/dev/null 這類丟掉輸出）
+	cleaned := strings.NewReplacer("2>&1", "", ">/dev/null", "", "> /dev/null", "", "2>/dev/null", "", "&>/dev/null", "").Replace(cmd)
+	if strings.Contains(cleaned, ">") {
+		return false
+	}
+	for _, seg := range segSplit.Split(cmd, -1) {
+		f := strings.Fields(seg)
+		i := 0
+		for i < len(f) && (f[i] == "rtk" || f[i] == "env" || f[i] == "(" || strings.Contains(f[i], "=") && !strings.HasPrefix(f[i], "-")) {
+			i++
+		}
+		if i >= len(f) {
+			continue
+		}
+		name := filepath.Base(f[i])
+		switch {
+		case name == "git":
+			sub := ""
+			for _, x := range f[i+1:] {
+				if !strings.HasPrefix(x, "-") {
+					sub = x
+					break
+				}
+			}
+			if !readonlyGit[sub] {
+				return false
+			}
+		case name == "find" && (strings.Contains(seg, "-delete") || strings.Contains(seg, "-exec")):
+			return false
+		case name == "sed" && !strings.Contains(seg, " -i"):
+			// sed 不帶 -i 只是輸出
+		case !readonlyCommands[name]:
+			return false
+		}
+	}
+	return true
+}
