@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"muninn/internal/audit"
 	"muninn/internal/registry"
 	"muninn/internal/session"
 	"muninn/internal/worktree"
@@ -30,6 +31,23 @@ type ChannelMaker interface {
 type Admin struct {
 	ConfigPath string
 	Discord    ChannelMaker // 選填：沒有就不能自動建／刪 Discord 頻道
+	Audit      *audit.Log   // 選填
+	Actor      string       // 稽核 log 裡的操作者（cli、channel、web…）
+}
+
+// As 回傳一份操作者不同的複本（共用設定與稽核）。
+func (a *Admin) As(actor string) *Admin {
+	cp := *a
+	cp.Actor = actor
+	return &cp
+}
+
+func (a *Admin) record(action, binding, detail string, err error) {
+	res := "ok"
+	if err != nil {
+		res, detail = "error", detail+"："+err.Error()
+	}
+	a.Audit.Record(audit.Event{Kind: "admin", Binding: binding, Actor: a.Actor, Action: action, Detail: detail, Result: res})
 }
 
 // BindOptions 是新增 binding 的參數。
@@ -50,7 +68,8 @@ type BindOptions struct {
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,48}$`)
 
 // Bind 新增一個 binding；回傳說明文字。
-func (a *Admin) Bind(ctx context.Context, o BindOptions) (string, error) {
+func (a *Admin) Bind(ctx context.Context, o BindOptions) (msg string, err error) {
+	defer func() { a.record("bind", o.Name, o.Repo+" "+o.Branch, err) }()
 	cfg, err := registry.Load(a.ConfigPath)
 	if err != nil {
 		return "", err
@@ -151,7 +170,10 @@ type UnbindOptions struct {
 
 // Unbind 移除 binding：從設定拿掉（正在跑的 Muninn 會停掉它）、worktree 有改動先 wip commit 再移除、
 // 狀態目錄封存到 <state_dir>/archive/。分支保留。
-func (a *Admin) Unbind(ctx context.Context, o UnbindOptions) (string, error) {
+func (a *Admin) Unbind(ctx context.Context, o UnbindOptions) (msg string, err error) {
+	defer func() {
+		a.record("unbind", o.Name, fmt.Sprintf("delete_channel=%v keep_worktree=%v", o.DeleteChannel, o.KeepWorktree), err)
+	}()
 	cfg, err := registry.Load(a.ConfigPath)
 	if err != nil {
 		return "", err
@@ -210,7 +232,9 @@ func exists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 // SetPaused 暫停或恢復。
 func (a *Admin) SetPaused(name string, paused bool) (string, error) {
-	if err := a.setField(name, "paused", paused); err != nil {
+	err := a.setField(name, "paused", paused)
+	a.record(map[bool]string{true: "pause", false: "resume"}[paused], name, "", err)
+	if err != nil {
 		return "", err
 	}
 	if paused {
@@ -247,7 +271,9 @@ func (a *Admin) Set(name, key, value string) (string, error) {
 	if typ == "string" && value == "" {
 		v = nil // 清掉，回到預設
 	}
-	if err := a.setField(name, key, v); err != nil {
+	err := a.setField(name, key, v)
+	a.record("set", name, key+"="+value, err)
+	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%s 的 %s 已設為 %s（會重啟這個頻道的 claude，對話保留）", name, key, value), nil

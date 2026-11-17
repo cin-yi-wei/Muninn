@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"muninn/internal/audit"
 	"muninn/internal/chat"
 	"muninn/internal/permission"
 )
@@ -213,7 +214,10 @@ func (a *App) takePending(id string) *pendingPerm {
 }
 
 // decide 套用決定，回傳結果那一行。
-func (a *App) decide(p *pendingPerm, action string) string {
+func (a *App) decide(p *pendingPerm, action, by string) string {
+	defer func() {
+		a.Audit.Record(audit.Event{Kind: "permission", Binding: a.Name, Actor: "user:" + by, Action: "decide #" + fmt.Sprint(p.n), Detail: p.desc, Result: action})
+	}()
 	var line string
 	switch action {
 	case actRemember:
@@ -288,12 +292,12 @@ func (a *App) HandleButton(customID, userID string) ButtonResult {
 		return ButtonResult{Handled: true, Update: true, Text: "⚪ 這則確認已經失效（逾時、已處理過，或 Muninn 重啟過）"}
 	}
 	// 保留原本的請求內容，讓人事後查得到批了什麼
-	return ButtonResult{Handled: true, Update: true, Text: p.desc + "\n" + a.decide(p, action)}
+	return ButtonResult{Handled: true, Update: true, Text: p.desc + "\n" + a.decide(p, action, userID)}
 }
 
 // handlePermReply 在 OnMessage 裡先攔截：有待確認的請求且訊息是確認回覆，就拿去回最早的那一則。
 // 回傳 true 表示訊息已被消化，不進 inbox。
-func (a *App) handlePermReply(content string) bool {
+func (a *App) handlePermReply(content, author string) bool {
 	a.perm.mu.Lock()
 	if len(a.perm.queue) == 0 {
 		a.perm.mu.Unlock()
@@ -312,7 +316,7 @@ func (a *App) handlePermReply(content string) bool {
 	if p == nil {
 		return false // 剛好同時逾時了，當一般訊息
 	}
-	line := a.decide(p, action)
+	line := a.decide(p, action, author)
 	go func() {
 		a.edit(p, line)
 		a.notify(fmt.Sprintf("%s（#%d）", line, p.n)) // 確認訊息可能已被洗上去，補一則短訊

@@ -35,6 +35,7 @@ import (
 
 	"muninn/internal/admin"
 	"muninn/internal/app"
+	"muninn/internal/audit"
 	"muninn/internal/discord"
 	"muninn/internal/permission"
 	"muninn/internal/queue"
@@ -277,7 +278,7 @@ func cmdAdmin(cfgPath, sub string, args []string) error {
 	if err != nil {
 		return err
 	}
-	adm := &admin.Admin{ConfigPath: cfgPath}
+	adm := &admin.Admin{ConfigPath: cfgPath, Audit: &audit.Log{Path: filepath.Join(cfg.StateDir, "audit.jsonl")}, Actor: "cli"}
 	if tok := os.Getenv(cfg.TokenEnv); tok != "" {
 		adm.Discord = &discord.REST{Token: tok}
 	}

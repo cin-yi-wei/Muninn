@@ -17,6 +17,7 @@ import (
 
 	"muninn/internal/admin"
 	"muninn/internal/app"
+	"muninn/internal/audit"
 	"muninn/internal/chat"
 	"muninn/internal/discord"
 	"muninn/internal/permission"
@@ -26,6 +27,7 @@ import (
 	"muninn/internal/session"
 	"muninn/internal/tasks"
 	"muninn/internal/telegram"
+	"muninn/internal/web"
 	"muninn/internal/worktree"
 )
 
@@ -40,6 +42,7 @@ type daemon struct {
 	tg         *telegram.Bot
 	admin      *admin.Admin
 	tasks      *tasks.Manager
+	audit      *audit.Log
 
 	root context.Context
 
@@ -104,7 +107,8 @@ func cmdRun(cfgPath string) error {
 		paused:     map[string]registry.Binding{},
 		tgTold:     map[string]bool{},
 	}
-	d.admin = &admin.Admin{ConfigPath: cfgPath}
+	d.audit = &audit.Log{Path: filepath.Join(cfg.StateDir, "audit.jsonl")}
+	d.admin = &admin.Admin{ConfigPath: cfgPath, Audit: d.audit, Actor: "channel"}
 	if token != "" {
 		d.admin.Discord = d.discord
 	}
@@ -130,7 +134,8 @@ func cmdRun(cfgPath string) error {
 				a.Notify(text)
 			}
 		},
-		Logf: log.Printf,
+		Logf:  log.Printf,
+		Audit: d.audit,
 	}
 	if err := d.tasks.Start(ctx); err != nil {
 		return err
@@ -182,6 +187,19 @@ func cmdRun(cfgPath string) error {
 		return permission.ServeAll(gctx, d.socket, d.handlePermission, d.handleTool)
 	})
 	g.Go(func() error { return d.watchConfig(gctx) })
+	if cfg.WebListen != "off" {
+		if tok := os.Getenv(cfg.WebTokenEnv); tok != "" {
+			srv := &web.Server{Listen: cfg.WebListen, Token: tok, Backend: d}
+			g.Go(func() error {
+				if err := srv.Run(gctx); err != nil && gctx.Err() == nil {
+					log.Printf("web: %v（管理後台停用，其他功能照常）", err)
+				}
+				return nil
+			})
+		} else {
+			log.Printf("web: 沒有設定 %s，管理後台不啟動", cfg.WebTokenEnv)
+		}
+	}
 
 	err = g.Wait()
 	d.stopAll()
@@ -329,7 +347,7 @@ func (d *daemon) startBinding(cfg registry.Config, b registry.Binding) (*liveBin
 		StallTimeout:      cfg.Stall(),
 		Logf:              logger.Printf,
 	}
-	a.Name, a.Pauser = b.Name, d.admin
+	a.Name, a.Pauser, a.Audit = b.Name, d.admin, d.audit
 	if b.Control {
 		a.Admin = d.admin
 	}
@@ -547,14 +565,24 @@ func (d *daemon) byName(name string) *app.App {
 }
 
 func (d *daemon) handlePermission(ctx context.Context, req permission.Request) permission.Decision {
+	var dec permission.Decision
 	if id, ok := strings.CutPrefix(req.Binding, "task:"); ok {
-		return d.taskPermission(ctx, id, req)
+		dec = d.taskPermission(ctx, id, req)
+	} else if a := d.byName(req.Binding); a == nil {
+		dec = permission.Deny("binding " + req.Binding + " 已停止")
+	} else {
+		dec = a.RequestPermission(ctx, req)
 	}
-	a := d.byName(req.Binding)
-	if a == nil {
-		return permission.Deny("binding " + req.Binding + " 已停止")
+	// 唯讀工具（Read、Grep…）太頻繁，不記
+	if ask, _ := permission.NeedsApproval(req.ToolName, req.Input, permission.Scope{}); ask || req.ToolName == "Bash" {
+		res := dec.Behavior
+		if dec.Message != "" {
+			res += "：" + dec.Message
+		}
+		d.audit.Record(audit.Event{Kind: "permission", Binding: req.Binding, Actor: "muninn", Action: req.ToolName,
+			Detail: permission.Describe(req.ToolName, req.Input), Result: res})
 	}
-	return a.RequestPermission(ctx, req)
+	return dec
 }
 
 func (d *daemon) handleTool(ctx context.Context, binding, method string, input json.RawMessage) permission.ToolResult {
@@ -629,3 +657,16 @@ func (d *daemon) taskPermission(ctx context.Context, id string, req permission.R
 	req.Label = fmt.Sprintf("委派任務 `%s`（%s）", id, t.Title)
 	return a.RequestPermissionAsked(ctx, req)
 }
+
+// ---------- web.Backend ----------
+
+func (d *daemon) Config() registry.Config {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.cfg
+}
+
+func (d *daemon) App(name string) *app.App { return d.byName(name) }
+func (d *daemon) Admin() *admin.Admin      { return d.admin }
+func (d *daemon) Tasks() *tasks.Manager    { return d.tasks }
+func (d *daemon) Audit() *audit.Log        { return d.audit }

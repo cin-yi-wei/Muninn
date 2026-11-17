@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"muninn/internal/audit"
 	"muninn/internal/runner"
 	"muninn/internal/worktree"
 )
@@ -96,6 +97,7 @@ type Manager struct {
 	// Notify 在委派者的頻道貼一行狀態（選填）。
 	Notify func(source, text string)
 	Logf   func(format string, args ...any)
+	Audit  *audit.Log
 
 	mu      sync.Mutex
 	tasks   map[string]*Task
@@ -216,6 +218,7 @@ func (m *Manager) Delegate(src Source, in DelegateInput) (Task, error) {
 	m.mu.Unlock()
 	go m.run(id, cp.Prompt)
 	m.logf("tasks: %s 委派 %s（%s／%s）", src.Binding, id, role.Name, level)
+	m.Audit.Record(audit.Event{Kind: "task", Binding: src.Binding, Actor: src.Binding, Action: "delegate " + id, Detail: role.Name + "/" + level + "：" + cp.Title, Result: "queued"})
 	return cp, nil
 }
 
@@ -374,6 +377,7 @@ func (m *Manager) run(id, prompt string) {
 	}
 	commits, _ := gitOut(final.Repo, "log", "--oneline", final.BaseRev+".."+final.Branch)
 	m.logf("tasks: %s %s", id, final.Status)
+	m.Audit.Record(audit.Event{Kind: "task", Binding: final.Source, Actor: "task:" + id, Action: "finish " + id, Detail: final.Error, Result: final.Status})
 	m.notify(final.Source, fmt.Sprintf("%s 委派任務 `%s` %s", statusIcon(final.Status), id, statusText(final.Status)))
 	if m.Deliver != nil {
 		if err := m.Deliver(final.Source, fmt.Sprintf("%s-%d", id, final.Turns), report(final, commits)+note); err != nil {

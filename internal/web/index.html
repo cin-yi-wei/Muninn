@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muninn 管理後台</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2129; --muted:#6b7280; --line:#e5e7eb; --accent:#2f6fde; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161a; --card:#1d2026; --text:#e6e8eb; --muted:#9aa1ab; --line:#2c3038; --accent:#6c9cff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,"Noto Sans TC",sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:1; }
+  header h1 { font-size:16px; margin:0; }
+  nav button { background:none; border:0; color:var(--muted); font:inherit; padding:6px 10px; cursor:pointer; border-radius:6px; }
+  nav button.on { color:var(--text); background:var(--bg); font-weight:600; }
+  main { max-width:1100px; margin:0 auto; padding:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h3 { margin:0 0 4px; font-size:15px; display:flex; align-items:center; gap:8px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  .pill { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+  button.b { font:inherit; font-size:12px; padding:4px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--text); cursor:pointer; }
+  button.b:hover { border-color:var(--accent); }
+  button.danger { color:var(--bad); }
+  input, select, textarea { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+  textarea { width:100%; min-height:60px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--text); color:var(--bg); padding:8px 14px; border-radius:8px; display:none; max-width:80vw; white-space:pre-wrap; }
+  .hidden { display:none; }
+  details summary { cursor:pointer; color:var(--accent); font-size:12px; margin-top:8px; }
+  form.inline { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐦‍⬛ Muninn</h1>
+  <nav>
+    <button data-tab="bindings" class="on">頻道</button>
+    <button data-tab="tasks">委派任務</button>
+    <button data-tab="audit">稽核 log</button>
+  </nav>
+  <span style="flex:1"></span>
+  <button class="b" id="logout">登出</button>
+</header>
+
+<main>
+  <section id="login" class="card hidden" style="max-width:420px;margin:60px auto">
+    <h3>登入</h3>
+    <p class="muted">輸入 Muninn 的管理 token（環境變數 MUNINN_WEB_TOKEN）。只存在這個瀏覽器。</p>
+    <form id="loginForm" class="inline"><input id="tokenInput" type="password" placeholder="token" style="flex:1"><button class="b">登入</button></form>
+  </section>
+
+  <section id="tab-bindings">
+    <div class="grid" id="bindings"></div>
+    <div class="card" style="margin-top:14px">
+      <h3>新增頻道</h3>
+      <form id="bindForm" class="inline">
+        <input name="name" placeholder="名稱（小寫英數字 -）" required>
+        <input name="repo" placeholder="repo 路徑" required style="flex:1">
+        <input name="branch" placeholder="分支（選填）">
+        <select name="platform"><option value="discord">Discord</option><option value="telegram">Telegram</option></select>
+        <input name="channel_id" placeholder="頻道 id（Discord 留空＝自動建）">
+        <label class="muted"><input type="checkbox" name="auto_approve"> 自動放行</label>
+        <button class="b">新增</button>
+      </form>
+    </div>
+  </section>
+
+  <section id="tab-tasks" class="hidden">
+    <div class="card">
+      <h3>委派新任務</h3>
+      <form id="delegateForm">
+        <div class="inline" style="display:flex;gap:6px;flex-wrap:wrap">
+          <select name="binding" id="delegateBinding"></select>
+          <select name="role"><option>general</option><option>researcher</option><option>reviewer</option><option>implementer</option><option>tester</option></select>
+          <select name="level"><option>readonly</option><option>develop</option></select>
+          <input name="title" placeholder="標題（選填）" style="flex:1">
+        </div>
+        <textarea name="task" placeholder="要做的事（完整指示；結果會送回所選頻道的對話）" required style="margin-top:6px"></textarea>
+        <button class="b" style="margin-top:6px">委派</button>
+      </form>
+    </div>
+    <div class="card" style="margin-top:14px"><table><thead><tr><th>id</th><th>頻道</th><th>狀態</th><th>角色／等級</th><th>標題</th><th>建立</th><th></th></tr></thead><tbody id="tasks"></tbody></table></div>
+  </section>
+
+  <section id="tab-audit" class="hidden">
+    <div class="card"><table><thead><tr><th>時間</th><th>類別</th><th>頻道</th><th>誰</th><th>動作</th><th>結果</th><th>細節</th></tr></thead><tbody id="audit"></tbody></table></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+// 所有資料一律用 textContent 放進畫面（內容可能來自聊天訊息），不用 innerHTML
+const $ = (s, el = document) => el.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (k === 'style') e.style.cssText = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return e;
+};
+let token = localStorage.getItem('muninnToken') || '';
+let tab = 'bindings';
+
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 5000); }
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { showLogin(); throw new Error('token 不對'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+async function act(method, path, body, after) {
+  try { const d = await api(method, path, body); if (d && d.message) toast(d.message); await (after || refresh)(); }
+  catch (e) { toast('⚠️ ' + e.message); }
+}
+
+function showLogin() { $('#login').classList.remove('hidden'); for (const s of ['bindings', 'tasks', 'audit']) $('#tab-' + s).classList.add('hidden'); }
+$('#loginForm').onsubmit = (e) => { e.preventDefault(); token = $('#tokenInput').value.trim(); localStorage.setItem('muninnToken', token); $('#login').classList.add('hidden'); switchTab(tab); };
+$('#logout').onclick = () => { localStorage.removeItem('muninnToken'); token = ''; showLogin(); };
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+function switchTab(t) {
+  tab = t;
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  for (const s of ['bindings', 'tasks', 'audit']) $('#tab-' + s).classList.toggle('hidden', s !== t);
+  refresh();
+}
+
+function statusDot(b) {
+  if (b.paused) return ['var(--muted)', '暫停'];
+  if (!b.running) return ['var(--bad)', '沒在跑'];
+  const s = b.status;
+  if (s.auth_down) return ['var(--bad)', '登入失效'];
+  if (s.waiting_permissions) return ['var(--warn)', `等確認 ${s.waiting_permissions}`];
+  if (s.busy) return ['var(--ok)', '執行中'];
+  if (s.alive) return ['var(--accent)', `閒置 ${Math.round(s.idle_seconds / 60)} 分`];
+  return ['var(--muted)', '待命'];
+}
+
+async function renderBindings() {
+  const list = await api('GET', '/api/bindings');
+  const box = $('#bindings'); box.replaceChildren();
+  $('#delegateBinding').replaceChildren(...list.filter(b => !b.paused).map(b => el('option', { value: b.name }, b.name)));
+  for (const b of list) {
+    const [color, label] = statusDot(b);
+    const s = b.status || {};
+    const card = el('div', { class: 'card' },
+      el('h3', {}, el('span', { class: 'dot', style: 'background:' + color }), b.name,
+        b.control ? el('span', { class: 'pill' }, '🎛 控制') : null,
+        b.auto_approve ? el('span', { class: 'pill' }, '自動放行') : null,
+        el('span', { class: 'pill' }, b.platform)),
+      el('div', { class: 'muted' }, label, s.memory_mb ? ` · ${s.memory_mb} MB` : '', s.queued ? ` · 排隊 ${s.queued}` : '', b.schedules ? ` · 排程 ${b.schedules}` : '', b.active_tasks ? ` · 任務 ${b.active_tasks}` : ''),
+      el('div', { class: 'muted' }, b.repo + (b.branch ? ' @ ' + b.branch : '')),
+      el('div', { class: 'row' },
+        b.paused ? el('button', { class: 'b', onclick: () => act('POST', `/api/bindings/${b.name}/resume`) }, '▶ 恢復')
+                 : el('button', { class: 'b', onclick: () => act('POST', `/api/bindings/${b.name}/pause`) }, '⏸ 暫停'),
+        el('button', { class: 'b', onclick: () => act('POST', `/api/bindings/${b.name}/set`, { key: 'auto_approve', value: String(!b.auto_approve) }) }, b.auto_approve ? '關閉自動放行' : '開啟自動放行'),
+        el('button', { class: 'b danger', onclick: () => {
+          if (!confirm(`移除頻道 ${b.name}？\n未提交的改動會先 wip commit，分支保留。`)) return;
+          const del = b.platform === 'discord' && confirm('連 Discord 頻道一起刪？');
+          act('DELETE', `/api/bindings/${b.name}?delete_channel=${del ? 1 : 0}`);
+        } }, '移除')),
+      b.paused ? null : el('form', { class: 'inline', onsubmit: (e) => { e.preventDefault(); const t = e.target.text; act('POST', `/api/bindings/${b.name}/message`, { text: t.value }).then(() => t.value = ''); } },
+        el('input', { name: 'text', placeholder: '傳一則訊息給這個頻道的 claude', style: 'flex:1' }), el('button', { class: 'b' }, '送出')),
+      scheduleBlock(b));
+    box.append(card);
+  }
+}
+
+function scheduleBlock(b) {
+  const d = el('details', {}, el('summary', {}, `定時任務（${b.schedules}）`));
+  const body = el('div', {});
+  d.append(body);
+  d.addEventListener('toggle', async () => {
+    if (!d.open) return;
+    const list = await api('GET', `/api/bindings/${b.name}/schedules`);
+    const reload = () => { d.open = false; d.open = true; };
+    body.replaceChildren(
+      ...list.map(s => el('div', { class: 'row' },
+        el('b', {}, s.name), el('span', { class: 'muted' }, (s.cron || '單次 ' + s.at) + (s.paused ? '（暫停）' : '') + (s.next ? ' · 下次 ' + new Date(s.next).toLocaleString() : '')),
+        el('button', { class: 'b', onclick: () => act('POST', `/api/bindings/${b.name}/schedules/${s.name}/${s.paused ? 'resume' : 'pause'}`, null, reload) }, s.paused ? '恢復' : '暫停'),
+        el('button', { class: 'b danger', onclick: () => confirm(`刪除 ${s.name}？`) && act('DELETE', `/api/bindings/${b.name}/schedules/${s.name}`, null, reload) }, '刪除'),
+        el('div', { class: 'muted', style: 'width:100%' }, s.message))),
+      el('form', { class: 'inline', onsubmit: (e) => { e.preventDefault(); const f = e.target; const body = { name: f.sname.value, message: f.msg.value };
+          if (f.when.value.includes(' ') && /^\d{4}-/.test(f.when.value)) body.at = f.when.value; else body.cron = f.when.value;
+          act('POST', `/api/bindings/${b.name}/schedules`, body, reload); } },
+        el('input', { name: 'sname', placeholder: '名稱', required: '' }),
+        el('input', { name: 'when', placeholder: 'cron（0 9 * * 1-5）或 2026-11-18 09:00', required: '' }),
+        el('input', { name: 'msg', placeholder: '時間到送進頻道的內容', required: '', style: 'flex:1' }),
+        el('button', { class: 'b' }, '新增')));
+  });
+  return d;
+}
+
+$('#bindForm').onsubmit = (e) => {
+  e.preventDefault(); const f = e.target;
+  act('POST', '/api/bindings', { name: f.name.value, repo: f.repo.value, branch: f.branch.value, platform: f.platform.value,
+    channel_id: f.channel_id.value, auto_approve: f.auto_approve.checked }).then(() => f.reset());
+};
+
+async function renderTasks() {
+  if (!$('#delegateBinding').options.length) await renderBindings().catch(() => {});
+  const list = await api('GET', '/api/tasks');
+  $('#tasks').replaceChildren(...list.map(t => el('tr', {},
+    el('td', {}, t.id), el('td', {}, t.source), el('td', {}, t.status), el('td', {}, t.role + '／' + t.level),
+    el('td', { title: t.result || t.error || '' }, t.title), el('td', { class: 'muted' }, t.created_at.replace('T', ' ').slice(0, 16)),
+    el('td', {}, (t.status === 'queued' || t.status === 'running') ? el('button', { class: 'b danger', onclick: () => act('POST', `/api/tasks/${t.id}/cancel`) }, '取消') : null))));
+}
+$('#delegateForm').onsubmit = (e) => {
+  e.preventDefault(); const f = e.target;
+  act('POST', '/api/tasks', { binding: f.binding.value, role: f.role.value, level: f.level.value, title: f.title.value, task: f.task.value })
+    .then(() => { f.task.value = ''; toast('已委派，結果會送回所選頻道'); });
+};
+
+async function renderAudit() {
+  const list = await api('GET', '/api/audit?n=300');
+  $('#audit').replaceChildren(...list.reverse().map(a => el('tr', {},
+    el('td', { class: 'muted' }, a.time.replace('T', ' ').slice(0, 19)), el('td', {}, a.kind), el('td', {}, a.binding || ''),
+    el('td', {}, a.actor || ''), el('td', {}, a.action), el('td', {}, a.result || ''), el('td', { class: 'muted' }, a.detail || ''))));
+}
+
+async function refresh() {
+  if (!token) return showLogin();
+  try {
+    if (tab === 'bindings') await renderBindings();
+    if (tab === 'tasks') await renderTasks();
+    if (tab === 'audit') await renderAudit();
+  } catch (e) { if (token) toast('⚠️ ' + e.message); }
+}
+setInterval(() => { if (tab !== 'audit' && document.visibilityState === 'visible' && !document.activeElement.closest('form')) refresh(); }, 5000);
+switchTab('bindings');
+</script>
+</body>
+</html>

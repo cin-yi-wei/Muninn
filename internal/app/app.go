@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"muninn/internal/audit"
 	"muninn/internal/chat"
 	"muninn/internal/queue"
 	"muninn/internal/runner"
@@ -82,6 +83,7 @@ type App struct {
 	Admin             AdminOps         // 選填：控制頻道才有，管理所有 binding
 	Pauser            SelfPauser       // 選填：讓頻道用 !pause 暫停自己
 	Tasks             TaskOps          // 選填：委派（delegate 與 task_* 工具）
+	Audit             *audit.Log       // 選填：稽核 log
 	Files             Files            // 選填：附件下載與傳檔
 	StallTimeout      time.Duration    // claude 跑一輪時超過這麼久沒有任何事件就判定卡住，0 表示不檢查
 	Logf              func(format string, args ...any)
@@ -144,7 +146,7 @@ func (a *App) OnMessage(_ context.Context, m chat.Message) error {
 		return nil
 	}
 	// 有權限確認在等、而且這則是 y/n：拿去回確認，不進 inbox
-	if a.handlePermReply(m.Content) {
+	if a.handlePermReply(m.Content, m.AuthorID) {
 		return nil
 	}
 	job := InboxJob{

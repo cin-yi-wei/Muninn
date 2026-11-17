@@ -137,4 +137,6 @@ claude_cron 開的 session 就是普通 claude session（`~/.claude/projects/<�
 | 委派 | delegate／task_* 工具：每任務獨立 worktree 與 session、角色與等級、權限轉委派者頻道、結果回委派者對話 |
 | 其他 | muninn notify、muninn schedule add/rm/pause/resume/run |
 
-刻意沒做：網頁管理後台（CLI＋控制頻道已涵蓋操作）、A2A 的 caller 認證／webhook／稽核 log（單機自用）。
+| 管理後台 | 內建網頁＋JSON API（token 認證、預設只聽本機）：頻道狀態與操作、排程、委派、稽核 |
+| 對外入口 | `POST /api/bindings/{name}/message`（webhook）、`POST /api/tasks`（外部委派），token 認證 |
+| 稽核 | `audit.jsonl`：權限決定（含誰按的）、管理操作（cli／channel／web）、委派、API 呼叫 |

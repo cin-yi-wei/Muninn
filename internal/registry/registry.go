@@ -39,7 +39,11 @@ type Config struct {
 	// WorktreeRoot：bind 沒指定 worktree 時放在這底下（<root>/<name>），預設 <state_dir>/worktrees
 	WorktreeRoot string `json:"worktree_root"`
 	// MaxTasks：委派任務同時執行的上限，預設 3；TaskTimeout：單一任務最長時間，預設 60m
-	MaxTasks    int       `json:"max_tasks"`
+	MaxTasks int `json:"max_tasks"`
+	// WebListen：管理後台與對外 API 的位址，預設 127.0.0.1:8789，"off" 關閉；
+	// token 從 web_token_env 指定的環境變數讀（預設 MUNINN_WEB_TOKEN），沒有 token 就不啟動
+	WebListen   string    `json:"web_listen"`
+	WebTokenEnv string    `json:"web_token_env"`
 	TaskTimeout string    `json:"task_timeout"`
 	Bindings    []Binding `json:"bindings"`
 }
@@ -126,6 +130,12 @@ func Load(path string) (Config, error) {
 	}
 	if c.PermissionTimeout == "" {
 		c.PermissionTimeout = "30m"
+	}
+	if c.WebListen == "" {
+		c.WebListen = "127.0.0.1:8789"
+	}
+	if c.WebTokenEnv == "" {
+		c.WebTokenEnv = "MUNINN_WEB_TOKEN"
 	}
 	if c.MaxTasks <= 0 {
 		c.MaxTasks = 3

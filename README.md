@@ -144,6 +144,20 @@ claude 在跑的時候，頻道上會有一則「⏳ 工作中」訊息，列出
 - 同時執行上限 `max_tasks`（預設 3，超過排隊），單一任務上限 `task_timeout`（預設 60m）。任務不能再委派。
 - 任務結束時移除 worktree（沒提交的改動先 wip commit），分支保留；Muninn 重啟時執行中的任務標成中斷並通知。
 
+## 管理後台與對外 API
+
+設定 `MUNINN_WEB_TOKEN`（環境變數名稱可用 `web_token_env` 改）後，Muninn 會在 `web_listen`（預設 `127.0.0.1:8789`，`"off"` 關閉）開管理後台：
+
+- 網頁：所有頻道的即時狀態（執行中／閒置／等確認／登入失效、記憶體、排隊數）、暫停／恢復、切換自動放行、移除、新增頻道、
+  傳訊息給頻道的 claude、管理定時任務；委派任務清單與委派新任務；稽核 log。
+- 同一組 API 給外部系統用（`Authorization: Bearer <token>`）。端點清單見 `internal/web/web.go` 開頭註解。常用：
+  - `POST /api/bindings/{name}/message {"text","source"}`：webhook 入口，把訊息送進那個頻道的 claude
+  - `POST /api/tasks {"binding","task","role","level"}`：代某個頻道委派，結果回那個頻道
+- 預設只聽本機；要從外面連，前面加 TLS（反向代理或 tunnel）。
+
+**稽核 log**：`state_dir/audit.jsonl`（append-only，超過 10MB 輪替成 `.1`）記下權限決定（含誰按的）、頻道管理（cli／channel／web）、
+委派任務的開始與結束、外部 API 呼叫。網頁的「稽核 log」分頁可以看。
+
 ## 其他 CLI
 
 - `muninn schedule add <頻道> <名稱> (--cron "0 9 * * 1-5" | --at "2026-11-18 09:00") --message "…"`、
