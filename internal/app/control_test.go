@@ -234,3 +234,25 @@ func TestFullWidthBang(t *testing.T) {
 		t.Fatal("全形驚嘆號的指令不該進 inbox；不認得的句子照常交給 claude")
 	}
 }
+
+type fakeUsage struct{}
+
+func (fakeUsage) Text() string { return "📊 七天：已用 32%" }
+
+func TestUsageCommand(t *testing.T) {
+	dir := t.TempDir()
+	snd := &fakeSender{}
+	a := newApp(t, dir, &fakeAsker{}, snd, nil)
+	a.Ctl = &fakeCtl{}
+	_ = a.OnMessage(context.Background(), msgFrom("m", "!usage"))
+	waitFor(t, func() bool { return len(snd.snapshot()) == 1 })
+	if !strings.Contains(snd.snapshot()[0].text, "沒有接上") {
+		t.Fatalf("沒接 Usage 時要說明：%q", snd.snapshot()[0].text)
+	}
+	a.Usage = fakeUsage{}
+	_ = a.OnMessage(context.Background(), msgFrom("m2", "！usage"))
+	waitFor(t, func() bool { return len(snd.snapshot()) == 2 })
+	if snd.snapshot()[1].text != "📊 七天：已用 32%" || pendingInbox(dir) != 0 {
+		t.Fatalf("!usage 應直接回額度、不進 inbox：%+v", snd.snapshot())
+	}
+}

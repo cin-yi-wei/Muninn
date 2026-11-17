@@ -27,6 +27,7 @@ import (
 	"muninn/internal/session"
 	"muninn/internal/tasks"
 	"muninn/internal/telegram"
+	"muninn/internal/usage"
 	"muninn/internal/web"
 	"muninn/internal/worktree"
 )
@@ -43,6 +44,7 @@ type daemon struct {
 	admin      *admin.Admin
 	tasks      *tasks.Manager
 	audit      *audit.Log
+	usage      *usage.Store // claude 訂閱額度，所有頻道共用
 
 	root context.Context
 
@@ -108,6 +110,10 @@ func cmdRun(cfgPath string) error {
 		tgTold:     map[string]bool{},
 	}
 	d.audit = &audit.Log{Path: filepath.Join(cfg.StateDir, "audit.jsonl")}
+	d.usage = &usage.Store{Path: filepath.Join(cfg.StateDir, "usage.json")}
+	if cfg.Timezone != "" {
+		d.usage.Loc, _ = time.LoadLocation(cfg.Timezone)
+	}
 	d.admin = &admin.Admin{ConfigPath: cfgPath, Audit: d.audit, Actor: "channel"}
 	if token != "" {
 		d.admin.Discord = d.discord
@@ -359,6 +365,15 @@ func (d *daemon) startBinding(cfg registry.Config, b registry.Binding) (*liveBin
 	}
 	// 背景 subagent／背景指令做完時 claude 會自己多跑一輪，那一輪的回覆直接貼到頻道
 	r.SetOnSpontaneous(a.Spontaneous)
+	// 額度是整個帳號共用的：每個頻道跑完一輪都更新同一份紀錄
+	name := b.Name
+	r.SetOnRateLimit(func(raw json.RawMessage) {
+		var info usage.Info
+		if json.Unmarshal(raw, &info) == nil {
+			d.usage.Update(name, info)
+		}
+	})
+	a.Usage = d.usage
 	if err := session.MarkRunning(stateDir); err != nil {
 		return nil, err
 	}

@@ -87,12 +87,13 @@ token 放在 `telegram_token_env` 指定的環境變數（預設 `TELEGRAM_BOT_T
 
 ## 頻道裡的 Muninn 指令（M4）
 
-`!` 開頭、白名單內的人才能下，立刻執行、不交給 claude、不用等目前這一輪跑完：
+`!` 開頭（全形「！」也可以）、白名單內的人才能下，立刻執行、不交給 claude、不用等目前這一輪跑完：
 
 - `!status`：claude 程序狀態（執行中／閒置多久／沒在跑）、pid、記憶體、排隊中的訊息、等確認的權限
 - `!cancel`：中斷 claude 正在跑的這一輪，session 保留
 - `!restart`：中斷並關掉 claude 程序，下一則訊息會重新啟動並 `--resume`
 - `!schedules`：列出這個頻道的定時任務
+- `!usage`：claude 訂閱額度（各視窗用了幾 %、什麼時候重置）。資料來自每一輪的 rate_limit_event，所有頻道共用，存在 `state_dir/usage.json`
 - `!help`
 
 ## 定時任務（M4）

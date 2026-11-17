@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -399,5 +400,25 @@ done
 	in := string(must(os.ReadFile(filepath.Join(dir, "stdin.log"))))
 	if !strings.Contains(args, "--replay-user-messages") || !strings.Contains(in, `"uuid":"`) {
 		t.Fatalf("要開回放並帶 uuid：args=%s stdin=%s", args, in)
+	}
+}
+
+func TestRateLimitCallbackGetsFullInfo(t *testing.T) {
+	bin, dir := fakeClaude(t, `#!/bin/sh
+while IFS= read -r line; do
+  echo '{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"seven_day","unifiedWindows":{"seven_day":{"utilization":0.32}}}}'
+  echo '{"type":"result","subtype":"success","result":"ok"}'
+done
+`)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	var got string
+	r.SetOnRateLimit(func(raw json.RawMessage) { got = string(raw) })
+	rep, err := r.Ask(ctx5s(t), "x")
+	if err != nil || rep.RateLimit != "seven_day" {
+		t.Fatalf("%+v %v", rep, err)
+	}
+	if !strings.Contains(got, `"utilization":0.32`) {
+		t.Fatalf("callback 應拿到完整的 rate_limit_info：%q", got)
 	}
 }

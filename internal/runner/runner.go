@@ -63,9 +63,10 @@ type event struct {
 	RateLimit    *struct {
 		RateLimitType string `json:"rateLimitType"`
 	} `json:"rate_limit_info"`
-	IsReplay bool              `json:"isReplay"` // --replay-user-messages 回放的 user 訊息
-	UUID     string            `json:"uuid"`
-	Tasks    []json.RawMessage `json:"tasks"` // system/background_tasks_changed：目前還在跑的背景任務
+	RateLimitRaw json.RawMessage   `json:"-"`        // rate_limit_info 原文，交給 OnRateLimit
+	IsReplay     bool              `json:"isReplay"` // --replay-user-messages 回放的 user 訊息
+	UUID         string            `json:"uuid"`
+	Tasks        []json.RawMessage `json:"tasks"` // system/background_tasks_changed：目前還在跑的背景任務
 }
 
 type assistantMessage struct {
@@ -118,6 +119,7 @@ type Runner struct {
 	wmu     sync.Mutex
 	waiting *waiter // 目前在等回覆的 Ask；nil 表示沒有
 	onSpont func(Reply)
+	onRate  func(json.RawMessage)
 
 	statMu       sync.Mutex
 	apiKeySource string
@@ -140,6 +142,14 @@ type waiter struct {
 	id   string // 送進 stdin 的 uuid，用來對回放
 	ch   chan event
 	quit chan struct{} // Ask 返回時關閉，讀取 goroutine 就不再送
+}
+
+// SetOnRateLimit 設定收到 rate_limit_event 時要交給誰（rate_limit_info 原文）。
+// fn 在讀取 goroutine 裡同步呼叫，不要阻塞。
+func (r *Runner) SetOnRateLimit(fn func(json.RawMessage)) {
+	r.wmu.Lock()
+	r.onRate = fn
+	r.wmu.Unlock()
 }
 
 // SetOnSpontaneous 設定自發回合（不是由 Ask 開的那一輪）的回覆要交給誰。
@@ -278,6 +288,13 @@ func (r *Runner) start() error {
 			if json.Unmarshal(sc.Bytes(), &ev) != nil {
 				continue // 非 JSON 行直接略過
 			}
+			if ev.Type == "rate_limit_event" {
+				var raw struct {
+					Info json.RawMessage `json:"rate_limit_info"`
+				}
+				_ = json.Unmarshal(sc.Bytes(), &raw)
+				ev.RateLimitRaw = raw.Info
+			}
 			r.lastEvent.Store(time.Now().UnixNano())
 			r.dispatch(&d, ev)
 		}
@@ -321,6 +338,12 @@ func (r *Runner) dispatch(d *dispatcher, ev event) {
 			r.statMu.Lock()
 			r.rateLimit = ev.RateLimit.RateLimitType
 			r.statMu.Unlock()
+		}
+		r.wmu.Lock()
+		onRate := r.onRate
+		r.wmu.Unlock()
+		if onRate != nil && len(ev.RateLimitRaw) > 0 {
+			onRate(ev.RateLimitRaw)
 		}
 	}
 
