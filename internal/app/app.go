@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"muninn/internal/discord"
+	"muninn/internal/chat"
 	"muninn/internal/queue"
 	"muninn/internal/runner"
 	"muninn/internal/scheduler"
@@ -119,7 +119,7 @@ func jobID(createdAt, messageID string) string {
 }
 
 // OnMessage 是給 Gateway 的 callback：過濾作者後寫進 inbox。
-func (a *App) OnMessage(_ context.Context, m discord.Message) error {
+func (a *App) OnMessage(_ context.Context, m chat.Message) error {
 	if len(a.AllowedUsers) > 0 && !a.AllowedUsers[m.AuthorID] {
 		a.logf("inbox: 略過非白名單作者 %s 的訊息 %s", m.AuthorID, m.ID)
 		return nil

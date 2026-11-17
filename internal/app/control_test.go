@@ -201,3 +201,18 @@ func TestSupervisorIdleAndMemory(t *testing.T) {
 		t.Fatalf("閒置回收不該發通知，實際 %d 則", c)
 	}
 }
+
+func TestSlashCommands(t *testing.T) {
+	dir := t.TempDir()
+	snd := &fakeSender{}
+	a := newApp(t, dir, &fakeAsker{}, snd, nil)
+	a.Ctl = &fakeCtl{}
+	for _, c := range []string{"/status", "/status@my_muninn_bot", "/start"} {
+		_ = a.OnMessage(context.Background(), msgFrom("m", c))
+	}
+	_ = a.OnMessage(context.Background(), msgFrom("m2", "/tmp 底下有什麼"))
+	waitFor(t, func() bool { return len(snd.snapshot()) == 3 })
+	if pendingInbox(dir) != 1 {
+		t.Fatal("一般句子（含空白）不該被當成指令")
+	}
+}

@@ -21,18 +21,21 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	"muninn/internal/app"
+	"muninn/internal/chat"
 	"muninn/internal/discord"
 	"muninn/internal/permission"
 	"muninn/internal/registry"
 	"muninn/internal/runner"
 	"muninn/internal/scheduler"
 	"muninn/internal/session"
+	"muninn/internal/telegram"
 	"muninn/internal/worktree"
 )
 
@@ -153,6 +156,7 @@ func cmdRun(cfgPath string) error {
 	}
 	// token 晚點才檢查：沒有 token 也能把下面的元件接線跑一遍（缺依賴時 App.Init 會報錯）
 	token := os.Getenv(cfg.TokenEnv)
+	tgToken := os.Getenv(cfg.TelegramTokenEnv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -175,8 +179,10 @@ func cmdRun(cfgPath string) error {
 	claudeHome := filepath.Join(home, ".claude")
 
 	sender := &discord.REST{Token: token}
+	tg := &telegram.Bot{Token: tgToken}
 	byName := map[string]*app.App{}
-	apps := map[string]*app.App{} // channel id → app
+	apps := map[string]*app.App{}   // Discord 頻道 id → app
+	tgApps := map[string]*app.App{} // Telegram chat id → app
 	var runners []*runner.Runner
 	for _, b := range cfg.Bindings {
 		if b.Paused {
@@ -208,6 +214,14 @@ func cmdRun(cfgPath string) error {
 			ExtraArgs:     extra,
 		})
 		runners = append(runners, r)
+		// 依平台選送訊息的實作；App 本身不認平台
+		var out interface {
+			app.Sender
+			app.Prompter
+		} = sender
+		if b.Platform == registry.PlatformTelegram {
+			out = tg
+		}
 		a := &app.App{
 			StateDir:          stateDir,
 			ChannelID:         b.ChannelID,
@@ -216,8 +230,8 @@ func cmdRun(cfgPath string) error {
 			AutoApprove:       b.AutoApprove,
 			PermissionTimeout: cfg.PermTimeout(),
 			Asker:             r,
-			Sender:            sender,
-			Prompter:          sender,
+			Sender:            out,
+			Prompter:          out,
 			Ctl:               r,
 			SessionID:         sess.ID,
 			Schedules:         scheduler.NewStore(stateDir, cfg.Timezone),
@@ -229,46 +243,84 @@ func cmdRun(cfgPath string) error {
 		if err := a.Init(); err != nil {
 			return fmt.Errorf("%s: %w", b.Name, err)
 		}
-		apps[b.ChannelID] = a
+		if b.Platform == registry.PlatformTelegram {
+			tgApps[b.ChannelID] = a
+		} else {
+			apps[b.ChannelID] = a
+		}
 		byName[b.Name] = a
 		g.Go(func() error { return a.RunWorker(gctx) })
 		g.Go(func() error { return a.RunSender(gctx) })
 		g.Go(func() error { return a.RunScheduler(gctx, 30*time.Second) })
 		g.Go(func() error { return a.RunSupervisor(gctx, 30*time.Second, cfg.Idle(), cfg.MemLimitBytes()) })
 	}
-	if len(apps) == 0 {
+	if len(byName) == 0 {
 		return fmt.Errorf("沒有任何啟用中的 binding")
 	}
-	if token == "" {
+	var missing []string
+	if len(apps) > 0 && token == "" {
+		missing = append(missing, cfg.TokenEnv)
+	}
+	if len(tgApps) > 0 && tgToken == "" {
+		missing = append(missing, cfg.TelegramTokenEnv)
+	}
+	if len(missing) > 0 {
 		stop()
 		_ = g.Wait()
-		return fmt.Errorf("環境變數 %s 沒有設定 bot token（設定與接線檢查都通過了）", cfg.TokenEnv)
+		return fmt.Errorf("環境變數 %s 沒有設定 bot token（設定與接線檢查都通過了）", strings.Join(missing, "、"))
 	}
 
-	// 整個 bot 一條 Gateway 連線，依頻道 id 分派給對應的 binding
-	gw := &discord.Gateway{
-		Token:    token,
-		Channels: func(id string) bool { return apps[id] != nil },
-		OnMessage: func(ctx context.Context, m discord.Message) error {
-			return apps[m.ChannelID].OnMessage(ctx, m)
-		},
-		OnInteraction: func(ctx context.Context, it discord.Interaction) {
-			res := apps[it.ChannelID].HandleButton(it.CustomID, it.UserID)
-			if !res.Handled {
-				return
-			}
-			typ := discord.InteractionReply
-			if res.Update {
-				typ = discord.InteractionUpdateMessage
-			}
-			rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			if err := sender.RespondInteraction(rctx, it.ID, it.Token, typ, res.Text, !res.Update); err != nil {
-				log.Printf("回應按鈕互動失敗: %v", err)
-			}
-		},
+	if len(tgApps) > 0 {
+		poller := &telegram.Poller{
+			Bot:   tg,
+			Chats: func(id string) bool { return tgApps[id] != nil },
+			OnMessage: func(ctx context.Context, m chat.Message) error {
+				return tgApps[m.ChannelID].OnMessage(ctx, m)
+			},
+			OnInteraction: func(ctx context.Context, it chat.Interaction) {
+				res := tgApps[it.ChannelID].HandleButton(it.CustomID, it.UserID)
+				rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				// Telegram 一定要回應按鈕，否則會一直轉圈
+				if res.Handled && res.Update {
+					if err := tg.EditMessage(rctx, it.ChannelID, it.MessageID, res.Text); err != nil {
+						log.Printf("telegram: 改寫確認訊息失敗: %v", err)
+					}
+					res.Text = ""
+				}
+				if err := tg.AnswerCallback(rctx, it.ID, res.Text, res.Handled && !res.Update); err != nil {
+					log.Printf("telegram: 回應按鈕失敗: %v", err)
+				}
+			},
+		}
+		g.Go(func() error { return poller.Run(gctx) })
 	}
-	g.Go(func() error { return gw.Run(gctx) })
+	if len(apps) > 0 { // 沒有 Discord binding 就不連 Gateway
+		// 整個 bot 一條 Gateway 連線，依頻道 id 分派給對應的 binding
+		gw := &discord.Gateway{
+			Token:    token,
+			Channels: func(id string) bool { return apps[id] != nil },
+			OnMessage: func(ctx context.Context, m discord.Message) error {
+				return apps[m.ChannelID].OnMessage(ctx, m)
+			},
+			OnInteraction: func(ctx context.Context, it discord.Interaction) {
+				res := apps[it.ChannelID].HandleButton(it.CustomID, it.UserID)
+				if !res.Handled {
+					return
+				}
+				typ := discord.InteractionReply
+				if res.Update {
+					typ = discord.InteractionUpdateMessage
+				}
+				rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				if err := sender.RespondInteraction(rctx, it.ID, it.Token, typ, res.Text, !res.Update); err != nil {
+					log.Printf("回應按鈕互動失敗: %v", err)
+				}
+			},
+		}
+		g.Go(func() error { return gw.Run(gctx) })
+	}
 	g.Go(func() error {
 		tools := func(ctx context.Context, binding, method string, input json.RawMessage) permission.ToolResult {
 			a := byName[binding]

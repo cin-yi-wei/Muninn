@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"muninn/internal/discord"
+	"muninn/internal/chat"
 	"muninn/internal/permission"
 )
 
 // Prompter 是權限確認需要的 Discord 能力（帶按鈕的訊息、改寫訊息）。
 type Prompter interface {
-	SendPrompt(ctx context.Context, channelID, text string, buttons []discord.Button) (string, error)
+	SendPrompt(ctx context.Context, channelID, text string, buttons []chat.Button) (string, error)
 	EditMessage(ctx context.Context, channelID, messageID, text string) error
 }
 
@@ -117,7 +117,7 @@ func (a *App) RequestPermission(ctx context.Context, req permission.Request) per
 		hint += "\n記住的範圍：" + formatKeys(keys)
 	}
 	text := fmt.Sprintf("%s\n%s（%s 內沒回自動拒絕）", p.desc, hint, timeout)
-	buttons := []discord.Button{
+	buttons := []chat.Button{
 		{Label: "允許一次", CustomID: customIDPrefix + "|" + actAllow + "|" + p.id, Style: 3},
 		{Label: "允許並記住", CustomID: customIDPrefix + "|" + actRemember + "|" + p.id, Style: 1},
 		{Label: "拒絕", CustomID: customIDPrefix + "|" + actDeny + "|" + p.id, Style: 4},

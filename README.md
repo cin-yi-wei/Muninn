@@ -41,6 +41,17 @@ DISCORD_BOT_TOKEN=... ./bin/muninn -config muninn.json run
 - 實作：claude 的 `--permission-prompt-tool` 指向 `muninn permission-mcp` 子程序（stdio MCP），
   子程序透過 `state_dir/permission.sock` 把請求轉給主程序決策。
 
+## Telegram（M5）
+
+binding 設 `"platform": "telegram"`，`channel_id` 填 chat id（私訊是正數、群組是負數），
+token 放在 `telegram_token_env` 指定的環境變數（預設 `TELEGRAM_BOT_TOKEN`）。
+
+- 用 long polling 收訊息，不用對外開 port 或設 webhook。同一個 bot 只能有一個程序在收，跟別的程序共用會 409 衝突。
+- 群組要先在 @BotFather `/setprivacy` 關掉隱私模式，bot 才收得到一般訊息。
+- 權限確認、定時任務、活動旁白、指令都一樣；指令可以用 `/status`（群組裡 `/status@bot名` 也行）。
+- 白名單用 Telegram 的 user id（跟 Discord 的是兩套）。
+- 回覆裡的 Markdown（粗體、行內 code、code block、連結）會轉成 Telegram HTML，轉失敗就退回純文字。
+
 ## 頻道裡的 Muninn 指令（M4）
 
 `!` 開頭、白名單內的人才能下，立刻執行、不交給 claude、不用等目前這一輪跑完：

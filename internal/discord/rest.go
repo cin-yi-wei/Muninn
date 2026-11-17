@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"muninn/internal/chat"
 	"net/http"
 	"strconv"
 	"time"
@@ -106,12 +107,8 @@ func (r *REST) do(ctx context.Context, method, path string, body any) ([]byte, e
 	}
 }
 
-// Button 是訊息底下的一顆按鈕。Style：1 藍紫、2 灰、3 綠、4 紅。
-type Button struct {
-	Label    string
-	CustomID string
-	Style    int
-}
+// Button 是訊息底下的一顆按鈕（與其他平台共用）。
+type Button = chat.Button
 
 func actionRow(buttons []Button) []any {
 	if len(buttons) == 0 {
@@ -177,35 +174,5 @@ func (r *REST) RespondInteraction(ctx context.Context, id, token string, typ int
 	return err
 }
 
-// SplitMessage 把文字切成每段最多 limit 個字元（以 rune 計）。
-// 優先在換行處切，其次空白，都沒有才硬切；不會切斷 UTF-8 字元。
-func SplitMessage(text string, limit int) []string {
-	if text == "" {
-		return []string{"（空白回覆）"}
-	}
-	var parts []string
-	for utf8.RuneCountInString(text) > limit {
-		runes := []rune(text)
-		cut := limit
-		for i := limit; i > limit/2; i-- {
-			if runes[i-1] == '\n' {
-				cut = i
-				break
-			}
-		}
-		if cut == limit {
-			for i := limit; i > limit/2; i-- {
-				if runes[i-1] == ' ' {
-					cut = i
-					break
-				}
-			}
-		}
-		parts = append(parts, string(runes[:cut]))
-		text = string(runes[cut:])
-	}
-	if text != "" {
-		parts = append(parts, text)
-	}
-	return parts
-}
+// SplitMessage 見 chat.SplitMessage。
+func SplitMessage(text string, limit int) []string { return chat.SplitMessage(text, limit) }

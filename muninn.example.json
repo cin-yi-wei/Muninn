@@ -1,6 +1,7 @@
 {
   "state_dir": "~/.local/state/muninn",
   "token_env": "DISCORD_BOT_TOKEN",
+  "telegram_token_env": "TELEGRAM_BOT_TOKEN",
   "allowed_users": ["<你的 Discord user id>"],
   "permission_timeout": "30m",
   "idle_timeout": "30m",
@@ -25,6 +26,13 @@
       "worktree": "~/project/some-repo-feature-x",
       "model": "claude-sonnet-5-5",
       "paused": true
+    },
+    {
+      "name": "tg-dm",
+      "platform": "telegram",
+      "channel_id": "<Telegram chat id>",
+      "allowed_users": ["<你的 Telegram user id>"],
+      "repo": "~/project/muninn"
     }
   ]
 }

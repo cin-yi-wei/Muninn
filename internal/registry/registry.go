@@ -15,10 +15,11 @@ import (
 
 // Config 是整份設定檔。
 type Config struct {
-	StateDir     string   `json:"state_dir"`     // 各 binding 的佇列與 session 狀態放這底下，預設 ~/.local/state/muninn
-	TokenEnv     string   `json:"token_env"`     // bot token 的環境變數名稱，預設 DISCORD_BOT_TOKEN
-	AllowedUsers []string `json:"allowed_users"` // 預設白名單，binding 沒寫時套用
-	ClaudeBin    string   `json:"claude_bin"`    // 選填
+	StateDir         string   `json:"state_dir"`          // 各 binding 的佇列與 session 狀態放這底下，預設 ~/.local/state/muninn
+	TokenEnv         string   `json:"token_env"`          // bot token 的環境變數名稱，預設 DISCORD_BOT_TOKEN
+	TelegramTokenEnv string   `json:"telegram_token_env"` // Telegram bot token 的環境變數名稱，預設 TELEGRAM_BOT_TOKEN
+	AllowedUsers     []string `json:"allowed_users"`      // 預設白名單，binding 沒寫時套用
+	ClaudeBin        string   `json:"claude_bin"`         // 選填
 	// PermissionTimeout 是等使用者回 y/n 的上限（Go duration 字串），預設 30m
 	PermissionTimeout string `json:"permission_timeout"`
 	// IdleTimeout：claude 程序閒置多久就關掉（下次來訊息再 --resume），"0" 表示不回收，預設 30m
@@ -47,8 +48,15 @@ type Binding struct {
 	QuoteReply   bool     `json:"quote_reply"`
 	Paused       bool     `json:"paused"`       // true：不收這個頻道的訊息
 	AutoApprove  bool     `json:"auto_approve"` // true：claude 的權限請求直接放行，不貼頻道確認
+	Platform     string   `json:"platform"`     // discord（預設）或 telegram；channel_id 是 Discord 頻道 id 或 Telegram chat id
 	Activity     *bool    `json:"activity"`     // claude 跑的時候在頻道顯示正在做什麼，預設 true
 }
+
+// 支援的平台。
+const (
+	PlatformDiscord  = "discord"
+	PlatformTelegram = "telegram"
+)
 
 // ActivityOn 回傳是否顯示活動旁白（沒設定時預設開）。
 func (b Binding) ActivityOn() bool { return b.Activity == nil || *b.Activity }
@@ -98,6 +106,9 @@ func Load(path string) (Config, error) {
 	if c.StateDir == "" {
 		c.StateDir = "~/.local/state/muninn"
 	}
+	if c.TelegramTokenEnv == "" {
+		c.TelegramTokenEnv = "TELEGRAM_BOT_TOKEN"
+	}
 	if c.TokenEnv == "" {
 		c.TokenEnv = "DISCORD_BOT_TOKEN"
 	}
@@ -135,6 +146,10 @@ func Load(path string) (Config, error) {
 	for i := range c.Bindings {
 		b := &c.Bindings[i]
 		b.Repo, b.Worktree = expand(b.Repo), expand(b.Worktree)
+		if b.Platform == "" {
+			b.Platform = PlatformDiscord
+		}
+		b.Platform = strings.ToLower(b.Platform)
 		switch {
 		case !nameRE.MatchString(b.Name):
 			return Config{}, fmt.Errorf("registry: binding #%d 名稱 %q 不合法", i, b.Name)
@@ -142,8 +157,10 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("registry: binding 名稱 %q 重複", b.Name)
 		case b.ChannelID == "":
 			return Config{}, fmt.Errorf("registry: %s 缺 channel_id", b.Name)
-		case channels[b.ChannelID]:
-			return Config{}, fmt.Errorf("registry: 頻道 %s 綁了兩次", b.ChannelID)
+		case b.Platform != PlatformDiscord && b.Platform != PlatformTelegram:
+			return Config{}, fmt.Errorf("registry: %s 的 platform %q 不支援（discord / telegram）", b.Name, b.Platform)
+		case channels[b.Platform+":"+b.ChannelID]:
+			return Config{}, fmt.Errorf("registry: %s 頻道 %s 綁了兩次", b.Platform, b.ChannelID)
 		case b.Repo == "":
 			return Config{}, fmt.Errorf("registry: %s 缺 repo", b.Name)
 		case b.Worktree != "" && b.Branch == "":
@@ -152,7 +169,7 @@ func Load(path string) (Config, error) {
 			// 頻道裡任何人都能操控 claude 是危險的預設，要求明確表態
 			return Config{}, fmt.Errorf("registry: %s 沒有白名單；真的要開放所有人請設 allow_anyone: true", b.Name)
 		}
-		names[b.Name], channels[b.ChannelID] = true, true
+		names[b.Name], channels[b.Platform+":"+b.ChannelID] = true, true
 	}
 	return c, nil
 }

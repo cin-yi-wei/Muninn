@@ -28,11 +28,15 @@ const helpText = "**Muninn 指令**（不會交給 claude）\n" +
 // 指令立刻執行，不用等 claude 跑完目前這一輪。
 func (a *App) handleCommand(content string) bool {
 	cmd := strings.ToLower(strings.TrimSpace(content))
+	if strings.HasPrefix(cmd, "/") && !strings.ContainsAny(cmd, " \n") {
+		// Telegram 習慣用 /status；群組裡會變成 /status@某bot
+		cmd = "!" + strings.SplitN(cmd[1:], "@", 2)[0]
+	}
 	if !strings.HasPrefix(cmd, "!") {
 		return false
 	}
 	switch cmd {
-	case "!help":
+	case "!help", "!start": // /start 是 Telegram 第一次打開 bot 時自動送的
 		go a.notify(helpText)
 	case "!schedules":
 		if a.Schedules == nil {

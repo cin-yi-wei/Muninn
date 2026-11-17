@@ -66,3 +66,21 @@ func TestLoadRejects(t *testing.T) {
 		t.Fatalf("明確 allow_anyone 應允許：%v", err)
 	}
 }
+
+func TestPlatform(t *testing.T) {
+	c, err := Load(write(t, `{"allowed_users":["u"],"bindings":[
+	  {"name":"d","channel_id":"123","repo":"/r"},
+	  {"name":"t","channel_id":"123","repo":"/r","platform":"Telegram"}]}`))
+	if err != nil {
+		t.Fatalf("不同平台可以用同一個 id：%v", err)
+	}
+	if d, _ := c.Find("d"); d.Platform != PlatformDiscord {
+		t.Fatal("預設應是 discord")
+	}
+	if tb, _ := c.Find("t"); tb.Platform != PlatformTelegram || c.TelegramTokenEnv != "TELEGRAM_BOT_TOKEN" {
+		t.Fatalf("%+v", tb)
+	}
+	if _, err := Load(write(t, `{"allowed_users":["u"],"bindings":[{"name":"x","channel_id":"1","repo":"/r","platform":"line"}]}`)); err == nil {
+		t.Fatal("不支援的平台應報錯")
+	}
+}

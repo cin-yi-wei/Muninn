@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"muninn/internal/chat"
 )
 
 // Gateway opcodes（只列用到的）
@@ -32,14 +34,8 @@ const defaultGatewayURL = "wss://gateway.discord.gg/?v=10&encoding=json"
 // readyTimeout：IDENTIFY 後這麼久還沒收到 READY 就當殭屍連線砍掉重連。
 const readyTimeout = 20 * time.Second
 
-// Message 是從 MESSAGE_CREATE 抽出來、我們關心的欄位。
-type Message struct {
-	ID        string `json:"id"`
-	ChannelID string `json:"channel_id"`
-	AuthorID  string `json:"author_id"`
-	Content   string `json:"content"`
-	CreatedAt string `json:"created_at"`
-}
+// Message 是從 MESSAGE_CREATE 抽出來、我們關心的欄位（與其他平台共用）。
+type Message = chat.Message
 
 // Conn 是 gateway 迴圈需要的 websocket 介面，抽出來方便用假連線測試。
 type Conn interface {
@@ -290,15 +286,8 @@ func parseMessage(raw json.RawMessage, accept func(string) bool) (Message, bool)
 	return Message{ID: d.ID, ChannelID: d.ChannelID, AuthorID: d.Author.ID, Content: d.Content, CreatedAt: d.Timestamp}, true
 }
 
-// Interaction 是一次按鈕點擊（MESSAGE_COMPONENT 互動）。
-type Interaction struct {
-	ID        string
-	Token     string
-	ChannelID string
-	UserID    string
-	CustomID  string
-	MessageID string
-}
+// Interaction 是一次按鈕點擊（與其他平台共用）。
+type Interaction = chat.Interaction
 
 // parseInteraction 只接受訊息元件互動（type 3）；伺服器頻道的使用者在 member.user，私訊在 user。
 func parseInteraction(raw json.RawMessage, accept func(string) bool) (Interaction, bool) {
