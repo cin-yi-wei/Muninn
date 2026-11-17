@@ -145,6 +145,11 @@ func ReadonlyBash(cmd string) bool {
 	if strings.TrimSpace(cmd) == "" || strings.Contains(cmd, "$(") || strings.Contains(cmd, "`") {
 		return false
 	}
+	// 引號裡的內容（例如 grep 的 pattern 'a|b'、'->'）不是 shell 運算子，先換成佔位字再判斷
+	var ok bool
+	if cmd, ok = maskQuotes(cmd); !ok {
+		return false // 引號沒成對，判斷不了
+	}
 	// 輸出導向：> 或 >>（允許 2>&1、>/dev/null 這類丟掉輸出）
 	cleaned := strings.NewReplacer("2>&1", "", ">/dev/null", "", "> /dev/null", "", "2>/dev/null", "", "&>/dev/null", "").Replace(cmd)
 	if strings.Contains(cleaned, ">") {
@@ -181,4 +186,24 @@ func ReadonlyBash(cmd string) bool {
 		}
 	}
 	return true
+}
+
+// maskQuotes 把單引號、雙引號裡的內容換成 Q（保留引號外的結構）；引號沒成對時 ok=false。
+func maskQuotes(s string) (string, bool) {
+	var b strings.Builder
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				b.WriteRune('Q')
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String(), quote == 0
 }

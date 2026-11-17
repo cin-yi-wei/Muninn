@@ -77,6 +77,10 @@ func TestReadonlyBash(t *testing.T) {
 		"python3 -c 'open(1)'":            false,
 		"go test ./...":                   false,
 		"ls >/dev/null":                   true,
+		"rtk grep -nE '^(module|go|toolchain) ' go.mod": true,
+		`grep -n "a -> b" x.go`:                         true,
+		"echo 'x' > f":                                  false,
+		"echo 'unterminated":                            false,
 	} {
 		if got := ReadonlyBash(cmd); got != ro {
 			t.Errorf("%q：readonly=%v，預期 %v", cmd, got, ro)
