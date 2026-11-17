@@ -224,6 +224,51 @@ func (b *Bot) Me(ctx context.Context) (string, error) {
 	return me.Username, err
 }
 
+// Command 是 Telegram 輸入框「/」選單裡的一個指令。
+type Command struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// validate 檢查 Bot API 的限制：command 只能小寫英數底線、1–32 字；description 3–256 字。
+func (c Command) validate() error {
+	if n := len(c.Command); n < 1 || n > 32 {
+		return fmt.Errorf("telegram: 指令 %q 長度須為 1–32", c.Command)
+	}
+	for _, r := range c.Command {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+			return fmt.Errorf("telegram: 指令 %q 只能用小寫英數與底線", c.Command)
+		}
+	}
+	if n := len([]rune(c.Description)); n < 3 || n > 256 {
+		return fmt.Errorf("telegram: 指令 %q 的說明長度須為 3–256 字", c.Command)
+	}
+	return nil
+}
+
+// MuninnCommands 是單頻道可用的 Muninn 指令（對應 app.helpText），啟動時註冊到 Telegram 選單。
+// 控制頻道專用、帶參數的管理指令不放進來。
+var MuninnCommands = []Command{
+	{"status", "查看 claude 程序狀態與排隊中的訊息"},
+	{"usage", "查看 claude 訂閱額度用量與重置時間"},
+	{"cancel", "中斷正在跑的這一輪（session 保留）"},
+	{"restart", "重啟 claude 程序（session 保留）"},
+	{"schedules", "列出這個頻道的定時任務"},
+	{"tasks", "列出這個頻道委派出去的子任務"},
+	{"pause", "暫停這個頻道（之後用 !resume 恢復）"},
+	{"help", "顯示 Muninn 指令說明"},
+}
+
+// SetCommands 用 setMyCommands 註冊指令選單（預設範圍：所有聊天室）。送出前先檢查 Bot API 限制。
+func (b *Bot) SetCommands(ctx context.Context, cmds []Command) error {
+	for _, c := range cmds {
+		if err := c.validate(); err != nil {
+			return err
+		}
+	}
+	return b.call(ctx, "setMyCommands", map[string]any{"commands": cmds}, nil)
+}
+
 // ---------- 收訊息 ----------
 
 type update struct {

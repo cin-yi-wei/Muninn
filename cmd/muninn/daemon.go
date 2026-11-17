@@ -188,6 +188,14 @@ func cmdRun(cfgPath string) error {
 			OnInteraction: d.onTelegramInteraction,
 		}
 		g.Go(func() error { return poller.Run(gctx) })
+		// 註冊「/」指令選單；失敗只記 log，不影響啟動
+		go func() {
+			ctx, cancel := context.WithTimeout(gctx, 30*time.Second)
+			defer cancel()
+			if err := d.tg.SetCommands(ctx, telegram.MuninnCommands); err != nil {
+				log.Printf("telegram: 註冊指令選單失敗: %v", err)
+			}
+		}()
 	}
 	g.Go(func() error {
 		return permission.ServeAll(gctx, d.socket, d.handlePermission, d.handleTool)

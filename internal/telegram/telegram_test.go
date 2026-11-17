@@ -22,10 +22,17 @@ func TestToHTML(t *testing.T) {
 		"**粗體** 與 `x<y`":                "<b>粗體</b> 與 <code>x&lt;y</code>",
 		"`**不是粗體**`":                    "<code>**不是粗體**</code>",
 		"看 [文件](https://a.b/c?x=1&y=2)": `看 <a href="https://a.b/c?x=1&amp;y=2">文件</a>`,
-		"前\n```go\nif a<b {}\n```\n後":   "前\n<pre><code>if a&lt;b {}</code></pre>\n後",
-		"```\nno lang\n```":             "<pre><code>no lang</code></pre>",
-		"沒收尾 ```code":                   "沒收尾 ```code",
-		"**沒收尾":                         "**沒收尾",
+		"前\n```go\nif a<b {}\n```\n後":   "前\n<pre><code class=\"language-go\">if a&lt;b {}</code></pre>\n後",
+		"```diff\n-a\n+b\n```": `<pre><code class="language-diff">-a
++b</code></pre>`,
+		"```c++\nx\n```":           `<pre><code class="language-c++">x</code></pre>`,
+		"```objective_c-2\nx\n```": `<pre><code class="language-objective_c-2">x</code></pre>`,
+		// 標記含不允許的字元：一律當成沒標記，避免把屬性注入 HTML
+		"```go\"onclick=\"x\ny\n```": "<pre><code>y</code></pre>",
+		"```a<b>\ny\n```":            "<pre><code>y</code></pre>",
+		"```\nno lang\n```":          "<pre><code>no lang</code></pre>",
+		"沒收尾 ```code":                "沒收尾 ```code",
+		"**沒收尾":                      "**沒收尾",
 	}
 	for in, want := range cases {
 		if got := ToHTML(in); got != want {
@@ -311,5 +318,47 @@ func TestFetchAndSendFile(t *testing.T) {
 	}
 	if err := b.SendFile(context.Background(), "1", "a.zip", []byte("Z"), ""); err != nil || method != "sendDocument" || field != "document" {
 		t.Fatalf("其他檔案應用 sendDocument：%v %s", err, method)
+	}
+}
+
+func TestSetCommands(t *testing.T) {
+	f := &fakeAPI{}
+	b := newBot(t, f)
+	cmds := []Command{{Command: "status", Description: "查看狀態"}, {Command: "help", Description: "指令說明"}}
+	if err := b.SetCommands(context.Background(), cmds); err != nil {
+		t.Fatal(err)
+	}
+	c := f.snapshot()
+	if len(c) != 1 || c[0].method != "setMyCommands" {
+		t.Fatalf("應呼叫一次 setMyCommands：%v", c)
+	}
+	got, _ := json.Marshal(c[0].params)
+	want := `{"commands":[{"command":"status","description":"查看狀態"},{"command":"help","description":"指令說明"}]}`
+	if string(got) != want {
+		t.Fatalf("送出的 JSON 不對\n  得到 %s\n  預期 %s", got, want)
+	}
+	// 不合 Bot API 限制的指令在送出前就擋下
+	for _, bad := range []Command{{"Status", "查看狀態"}, {"", "查看狀態"}, {"a-b", "查看狀態"}, {strings.Repeat("a", 33), "查看狀態"}, {"ok", "短"}, {"ok", strings.Repeat("字", 257)}} {
+		if err := b.SetCommands(context.Background(), []Command{bad}); err == nil {
+			t.Errorf("%+v 應被拒絕", bad)
+		}
+	}
+	if n := len(f.snapshot()); n != 1 {
+		t.Fatalf("不合法的指令不該送出，實際呼叫 %d 次", n)
+	}
+}
+
+func TestMuninnCommands(t *testing.T) {
+	want := []string{"status", "usage", "cancel", "restart", "schedules", "tasks", "pause", "help"}
+	if len(MuninnCommands) != len(want) {
+		t.Fatalf("指令清單應為 %v，實際 %+v", want, MuninnCommands)
+	}
+	for i, c := range MuninnCommands {
+		if c.Command != want[i] {
+			t.Errorf("第 %d 個應為 %s，實際 %s", i, want[i], c.Command)
+		}
+		if err := c.validate(); err != nil {
+			t.Error(err)
+		}
 	}
 }

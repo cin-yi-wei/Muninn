@@ -8,7 +8,7 @@ import (
 
 // ToHTML 把 Muninn 與 claude 慣用的 Markdown 子集轉成 Telegram 的 HTML：
 //
-//	```lang\n…\n``` → <pre><code>…</code></pre>
+//	```lang\n…\n``` → <pre><code class="language-lang">…</code></pre>（沒有標記就不帶 class）
 //	`code`          → <code>…</code>
 //	**粗體**        → <b>…</b>
 //	[文字](網址)     → <a href="網址">文字</a>
@@ -29,17 +29,23 @@ func ToHTML(md string) string {
 		}
 		b.WriteString(inline(md[:i]))
 		block := md[i+3 : i+3+j]
-		// 第一行若是語言標記（沒有空白）就拿掉
+		// 第一行若是語言標記（沒有空白）就拿掉；標記合法才放進 class，讓用戶端依語言上色
+		open := "<pre><code>"
 		if nl := strings.IndexByte(block, '\n'); nl >= 0 && !strings.ContainsAny(block[:nl], " \t") {
+			if lang := block[:nl]; langRE.MatchString(lang) {
+				open = `<pre><code class="language-` + lang + `">`
+			}
 			block = block[nl+1:]
 		}
 		block = strings.TrimSuffix(block, "\n")
-		b.WriteString("<pre><code>" + html.EscapeString(block) + "</code></pre>")
+		b.WriteString(open + html.EscapeString(block) + "</code></pre>")
 		md = md[i+3+j+3:]
 	}
 }
 
 var (
+	// langRE 是允許放進 class 的語言標記：只收英數與 -_+，其他字元一律當成沒標記，避免注入屬性
+	langRE = regexp.MustCompile(`^[A-Za-z0-9_+-]+$`)
 	codeRE = regexp.MustCompile("`([^`\n]+)`")
 	boldRE = regexp.MustCompile(`\*\*([^*\n]+?)\*\*`)
 	linkRE = regexp.MustCompile(`\[([^\]\n]+)\]\((https?://[^\s)]+)\)`)
