@@ -13,7 +13,7 @@ Wants=network-online.target
 EnvironmentFile=%h/.config/muninn/env
 # claude CLI 與 git 要在 PATH 上
 Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/project/muninn-main/bin/muninn -config %h/.config/muninn/muninn.json run
+ExecStart=%h/.local/bin/muninn -config %h/.config/muninn/muninn.json run
 Restart=on-failure
 RestartSec=5
 # 整體記憶體上限（含所有 claude 子程序）；單一 binding 另由 memory_limit_mb 控管
