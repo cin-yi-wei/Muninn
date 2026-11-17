@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -270,12 +271,31 @@ func cmdRun(cfgPath string) error {
 		return fmt.Errorf("環境變數 %s 沒有設定 bot token（設定與接線檢查都通過了）", strings.Join(missing, "、"))
 	}
 
-	if len(tgApps) > 0 {
+	// 有 Telegram token 就輪詢：就算還沒綁任何聊天室，也能回報新聊天室的 chat id 方便設定
+	if tgToken != "" {
+		var tgMu sync.Mutex
+		told := map[string]bool{}
 		poller := &telegram.Poller{
 			Bot:   tg,
 			Chats: func(id string) bool { return tgApps[id] != nil },
 			OnMessage: func(ctx context.Context, m chat.Message) error {
 				return tgApps[m.ChannelID].OnMessage(ctx, m)
+			},
+			OnUnknown: func(ctx context.Context, m chat.Message) {
+				log.Printf("telegram: 未綁定的聊天室 chat_id=%s user_id=%s 傳了訊息", m.ChannelID, m.AuthorID)
+				tgMu.Lock()
+				first := !told[m.ChannelID]
+				told[m.ChannelID] = true
+				tgMu.Unlock()
+				if !first {
+					return
+				}
+				msg := fmt.Sprintf("👋 Muninn 收到了，但這個聊天室還沒綁定。\nchat id：`%s`\n你的 user id：`%s`\n把它們寫進 muninn.json 的 binding（platform: telegram）後重啟 Muninn 就能用。", m.ChannelID, m.AuthorID)
+				sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				if err := tg.Send(sctx, m.ChannelID, msg, m.ID); err != nil {
+					log.Printf("telegram: 回覆未綁定聊天室失敗: %v", err)
+				}
 			},
 			OnInteraction: func(ctx context.Context, it chat.Interaction) {
 				res := tgApps[it.ChannelID].HandleButton(it.CustomID, it.UserID)

@@ -259,6 +259,8 @@ type Poller struct {
 	Chats         func(chatID string) bool
 	OnMessage     func(ctx context.Context, m chat.Message) error
 	OnInteraction func(ctx context.Context, it chat.Interaction)
+	// OnUnknown 選填：還沒綁定的聊天室傳訊息進來時呼叫（設定新聊天室時用來查 chat id 與 user id）
+	OnUnknown func(ctx context.Context, m chat.Message)
 	// PollTimeout 是每次 getUpdates 最多等多久，預設 50 秒（測試可調短）
 	PollTimeout time.Duration
 }
@@ -320,19 +322,26 @@ func (p *Poller) handle(ctx context.Context, u update) error {
 			text = m.Caption
 		}
 		chatID := strconv.FormatInt(m.Chat.ID, 10)
-		if text == "" || m.From == nil || m.From.IsBot || p.Chats == nil || !p.Chats(chatID) {
+		if text == "" || m.From == nil || m.From.IsBot {
 			return nil
 		}
-		if p.OnMessage == nil {
-			return nil
-		}
-		return p.OnMessage(ctx, chat.Message{
+		msg := chat.Message{
 			ID:        strconv.FormatInt(m.MessageID, 10),
 			ChannelID: chatID,
 			AuthorID:  strconv.FormatInt(m.From.ID, 10),
 			Content:   text,
 			CreatedAt: time.Unix(m.Date, 0).UTC().Format(time.RFC3339),
-		})
+		}
+		if p.Chats == nil || !p.Chats(chatID) {
+			if p.OnUnknown != nil {
+				p.OnUnknown(ctx, msg)
+			}
+			return nil
+		}
+		if p.OnMessage == nil {
+			return nil
+		}
+		return p.OnMessage(ctx, msg)
 	}
 	if cq := u.CallbackQuery; cq != nil && cq.Message != nil {
 		chatID := strconv.FormatInt(cq.Message.Chat.ID, 10)

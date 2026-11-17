@@ -169,12 +169,14 @@ func TestPollerDispatches(t *testing.T) {
 			"from": map[string]any{"id": 42}, "message": map[string]any{"message_id": 77, "chat": map[string]any{"id": -100}}}},
 	}}}
 	b := newBot(t, f)
+	unknown := make(chan chat.Message, 4)
 	msgs := make(chan chat.Message, 4)
 	its := make(chan chat.Interaction, 4)
 	p := &Poller{Bot: b, PollTimeout: time.Second,
 		Chats:         func(id string) bool { return id == "-100" },
 		OnMessage:     func(_ context.Context, m chat.Message) error { msgs <- m; return nil },
 		OnInteraction: func(_ context.Context, it chat.Interaction) { its <- it },
+		OnUnknown:     func(_ context.Context, m chat.Message) { unknown <- m },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -199,6 +201,14 @@ func TestPollerDispatches(t *testing.T) {
 	case m := <-msgs:
 		t.Fatalf("別的群、bot 的訊息不該收：%+v", m)
 	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case m := <-unknown:
+		if m.ChannelID != "-999" || m.AuthorID != "42" {
+			t.Fatalf("未綁定的聊天室應交給 OnUnknown：%+v", m)
+		}
+	default:
+		t.Fatal("未綁定的聊天室應交給 OnUnknown")
 	}
 	// 第二次 getUpdates 應帶 offset 14（確認收到）
 	time.Sleep(100 * time.Millisecond)
