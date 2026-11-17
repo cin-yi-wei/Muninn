@@ -147,3 +147,72 @@ while IFS= read -r line; do sleep 30; done
 }
 
 func near(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }
+
+func TestInterruptAndResume(t *testing.T) {
+	bin, dir := fakeClaude(t, `#!/bin/sh
+echo "$@" >> "$(dirname "$0")/args.log"
+while IFS= read -r line; do
+  case "$line" in *SLOW*) sleep 30;; esac
+  echo '{"type":"result","subtype":"success","result":"ok"}'
+done
+`)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	if r.Interrupt() {
+		t.Fatal("沒在跑時 Interrupt 應回 false")
+	}
+	errc := make(chan error, 1)
+	go func() { _, err := r.Ask(context.Background(), "SLOW"); errc <- err }()
+	deadline := time.Now().Add(3 * time.Second)
+	for !r.Status().Busy && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st := r.Status(); !st.Busy || !st.Alive || st.PID == 0 {
+		t.Fatalf("跑一輪時狀態應為 busy：%+v", st)
+	}
+	if !r.Interrupt() {
+		t.Fatal("跑一輪時 Interrupt 應回 true")
+	}
+	select {
+	case err := <-errc:
+		if err != ErrInterrupted {
+			t.Fatalf("應回 ErrInterrupted，得到 %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("中斷後沒有及時返回")
+	}
+	rep, err := r.Ask(ctx5s(t), "hi")
+	if err != nil || rep.Text != "ok" {
+		t.Fatalf("中斷後下一輪應正常：%+v %v", rep, err)
+	}
+	args, _ := os.ReadFile(filepath.Join(dir, "args.log"))
+	if !strings.Contains(strings.Split(strings.TrimSpace(string(args)), "\n")[1], "--resume u") {
+		t.Fatalf("中斷後重啟應 --resume：%s", args)
+	}
+}
+
+func TestCloseIfIdle(t *testing.T) {
+	bin, dir := fakeClaude(t, "")
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	if _, err := r.Ask(ctx5s(t), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if r.CloseIfIdle(context.Background(), time.Hour) {
+		t.Fatal("還沒閒置夠久不該關")
+	}
+	if st := r.Status(); !st.Alive || st.RSSBytes <= 0 {
+		t.Fatalf("程序應活著且讀得到記憶體：%+v", st)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if !r.CloseIfIdle(context.Background(), 10*time.Millisecond) {
+		t.Fatal("閒置超過門檻應關掉")
+	}
+	if r.Status().Alive {
+		t.Fatal("關掉後不該還活著")
+	}
+	rep, err := r.Ask(ctx5s(t), "again")
+	if err != nil || !strings.HasPrefix(rep.Text, "turn=1 ") {
+		t.Fatalf("回收後下一則應重新啟動：%+v %v", rep, err)
+	}
+}

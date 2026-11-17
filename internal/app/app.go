@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"muninn/internal/discord"
@@ -27,6 +28,9 @@ type InboxJob struct {
 	AuthorID  string `json:"author_id"`
 	Content   string `json:"content"`
 	CreatedAt string `json:"created_at"`
+	// Attempts 是送進 claude 的次數。送之前就先 +1 寫回檔案，
+	// 所以 Muninn 跑到一半崩潰、重啟回放時看得出這則已經試過幾次。
+	Attempts int `json:"attempts,omitempty"`
 }
 
 // OutboxJob 是一則待送回頻道的回覆。
@@ -58,7 +62,10 @@ type App struct {
 	PermissionTimeout time.Duration
 	Asker             Asker
 	Sender            Sender
-	Prompter          Prompter // 權限確認用（帶按鈕的訊息）
+	Prompter          Prompter   // 權限確認用（帶按鈕的訊息）
+	Ctl               Controller // 選填：!status / !cancel / !restart 與閒置、記憶體回收用
+	SessionID         string     // 顯示用
+	MaxAttempts       int        // 同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
 	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir
@@ -113,6 +120,10 @@ func (a *App) OnMessage(_ context.Context, m discord.Message) error {
 		a.logf("inbox: 略過非白名單作者 %s 的訊息 %s", m.AuthorID, m.ID)
 		return nil
 	}
+	// ! 開頭是給 Muninn 自己的指令，不交給 claude（claude 停不了驅動自己的程序）
+	if a.handleCommand(m.Content) {
+		return nil
+	}
 	// 有權限確認在等、而且這則是 y/n：拿去回確認，不進 inbox
 	if a.handlePermReply(m.Content) {
 		return nil
@@ -142,6 +153,20 @@ func (a *App) RunWorker(ctx context.Context) error {
 		if err := a.inbox.Get(id, &job); err != nil {
 			return err
 		}
+		maxAttempts := a.MaxAttempts
+		if maxAttempts <= 0 {
+			maxAttempts = 3
+		}
+		job.Attempts++
+		if job.Attempts > maxAttempts {
+			// 前幾次都沒跑完就讓 Muninn 中斷了，很可能是這則訊息本身有問題：放棄，免得無限回放
+			a.logf("worker: %s 已嘗試 %d 次都沒完成，放棄", id, maxAttempts)
+			return a.finish(id, job, fmt.Sprintf("⚠️ Muninn：這則訊息已經試了 %d 次，每次都在處理途中中斷（Muninn 崩潰或重啟），放棄處理。\n> %s",
+				maxAttempts, firstLine(job.Content)))
+		}
+		if err := a.inbox.Update(id, job); err != nil {
+			return err
+		}
 		start := time.Now()
 		prompt := job.Content
 		// 剛接手舊 session：第一則訊息前面附上交接說明
@@ -151,7 +176,10 @@ func (a *App) RunWorker(ctx context.Context) error {
 		}
 		rep, err := a.Asker.Ask(ctx, prompt)
 		if ctx.Err() != nil {
-			return ctx.Err() // 關機中：job 留在 pending，下次啟動回放
+			// 正常關機不算一次失敗：次數退回去，job 留在 pending，下次啟動回放
+			job.Attempts--
+			_ = a.inbox.Update(id, job)
+			return ctx.Err()
 		}
 		text := rep.Text
 		if err == nil && handoff != "" {
@@ -159,23 +187,38 @@ func (a *App) RunWorker(ctx context.Context) error {
 				a.logf("worker: 清除交接標記失敗: %v", cerr)
 			}
 		}
-		if err != nil {
+		if errors.Is(err, runner.ErrInterrupted) {
+			text = "⏹ 已中斷這一輪（session 保留，可以接著講）"
+		} else if err != nil {
 			text = fmt.Sprintf("⚠️ Muninn：claude 執行失敗：%v", err)
 		} else if rep.IsError {
 			text = fmt.Sprintf("⚠️ Muninn：claude 回報錯誤（%s）\n%s", rep.Subtype, rep.Text)
 		}
 		a.logf("worker: %s 完成，耗時 %s，apiKeySource=%q rateLimit=%q cost≈$%.4f（程序累計 $%.4f）",
 			id, time.Since(start).Round(time.Millisecond), rep.APIKeySource, rep.RateLimit, rep.CostUSD, rep.TotalCostUSD)
-		out := OutboxJob{ID: id, ChannelID: job.ChannelID, Text: text}
-		if a.QuoteReply {
-			out.ReplyTo = job.MessageID
-		}
-		if err := a.outbox.Put(out.ID, out); err != nil && !errors.Is(err, queue.ErrExists) {
-			return err
-		}
-		wake(a.wakeSender)
-		return a.inbox.Done(id)
+		return a.finish(id, job, text)
 	})
+}
+
+// finish 把回覆寫進 outbox，並把 inbox job 標成完成。
+func (a *App) finish(id string, job InboxJob, text string) error {
+	out := OutboxJob{ID: id, ChannelID: job.ChannelID, Text: text}
+	if a.QuoteReply {
+		out.ReplyTo = job.MessageID
+	}
+	if err := a.outbox.Put(out.ID, out); err != nil && !errors.Is(err, queue.ErrExists) {
+		return err
+	}
+	wake(a.wakeSender)
+	return a.inbox.Done(id)
+}
+
+func firstLine(s string) string {
+	s = strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
+	if r := []rune(s); len(r) > 80 {
+		s = string(r[:80]) + "…"
+	}
+	return s
 }
 
 // RunSender 把 outbox 的回覆送回頻道；送失敗的留在 pending 下一輪重試。

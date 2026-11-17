@@ -146,10 +146,8 @@ func cmdRun(cfgPath string) error {
 	if err != nil {
 		return err
 	}
+	// token 晚點才檢查：沒有 token 也能把下面的元件接線跑一遍（缺依賴時 App.Init 會報錯）
 	token := os.Getenv(cfg.TokenEnv)
-	if token == "" {
-		return fmt.Errorf("環境變數 %s 沒有設定 bot token", cfg.TokenEnv)
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -204,6 +202,9 @@ func cmdRun(cfgPath string) error {
 			Asker:             r,
 			Sender:            sender,
 			Prompter:          sender,
+			Ctl:               r,
+			SessionID:         sess.ID,
+			MaxAttempts:       cfg.MaxAttempts,
 			Logf:              logger.Printf,
 		}
 		if err := a.Init(); err != nil {
@@ -213,9 +214,15 @@ func cmdRun(cfgPath string) error {
 		byName[b.Name] = a
 		g.Go(func() error { return a.RunWorker(gctx) })
 		g.Go(func() error { return a.RunSender(gctx) })
+		g.Go(func() error { return a.RunSupervisor(gctx, 30*time.Second, cfg.Idle(), cfg.MemLimitBytes()) })
 	}
 	if len(apps) == 0 {
 		return fmt.Errorf("沒有任何啟用中的 binding")
+	}
+	if token == "" {
+		stop()
+		_ = g.Wait()
+		return fmt.Errorf("環境變數 %s 沒有設定 bot token（設定與接線檢查都通過了）", cfg.TokenEnv)
 	}
 
 	// 整個 bot 一條 Gateway 連線，依頻道 id 分派給對應的 binding

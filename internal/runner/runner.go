@@ -13,8 +13,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -82,7 +84,16 @@ type Runner struct {
 	apiKeySource string
 	lastTotal    float64 // 上一輪 result 的累計花費，用來算單輪差額；重啟程序時歸零
 	rateLimit    string
+
+	// 以下不需持有 mu 就能讀，給 !status、閒置回收、!cancel 用
+	pid         atomic.Int64 // 目前 claude 程序的 pid（也是 process group id），0 表示沒在跑
+	busy        atomic.Bool  // 正在跑一輪
+	lastUsed    atomic.Int64 // 上一輪結束的時間（unix nano）
+	interrupted atomic.Bool  // 這一輪被 Interrupt 中斷
 }
+
+// ErrInterrupted 表示這一輪被使用者中斷（!cancel / !restart）。
+var ErrInterrupted = errors.New("runner: 已被中斷")
 
 // New 建立 Runner，但不立刻啟動程序；第一次 Ask 才啟動。
 func New(cfg Config) *Runner {
@@ -166,9 +177,11 @@ func (r *Runner) start() error {
 			events <- ev
 		}
 		_ = cmd.Wait()
+		r.pid.CompareAndSwap(int64(cmd.Process.Pid), 0)
 		close(done)
 	}()
 	r.cmd, r.stdin, r.events, r.done = cmd, stdin, events, done
+	r.pid.Store(int64(cmd.Process.Pid))
 	r.lastTotal = 0
 	r.started = true
 	return nil
@@ -176,9 +189,18 @@ func (r *Runner) start() error {
 
 // Ask 送出一則 user 訊息，阻塞到收到 result 事件為止。
 // ctx 取消時會砍掉程序（下次 Ask 會 --resume 接回 session）。
-func (r *Runner) Ask(ctx context.Context, text string) (Reply, error) {
+func (r *Runner) Ask(ctx context.Context, text string) (rep Reply, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.interrupted.Store(false)
+	r.busy.Store(true)
+	defer func() {
+		r.busy.Store(false)
+		r.lastUsed.Store(time.Now().UnixNano())
+		if err != nil && r.interrupted.Load() {
+			err = ErrInterrupted
+		}
+	}()
 
 	if !r.alive() {
 		if err := r.start(); err != nil {
@@ -288,6 +310,43 @@ func (r *Runner) killLocked() {
 func (r *Runner) Close(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.closeLocked(ctx)
+}
+
+// Interrupt 中斷正在跑的這一輪（砍掉整個 process group）；回傳 false 表示沒有在跑。
+// 下一則訊息會用 --resume 接回同一個 session。
+func (r *Runner) Interrupt() bool {
+	pid := r.pid.Load()
+	if !r.busy.Load() || pid == 0 {
+		return false
+	}
+	r.interrupted.Store(true)
+	_ = syscall.Kill(-int(pid), syscall.SIGKILL)
+	return true
+}
+
+// CloseIfIdle 在沒有跑任何一輪、且閒置超過 d 時關掉 claude 程序，回傳是否關了。
+// 正在跑或拿不到鎖就跳過（不會為了回收而等）。
+func (r *Runner) CloseIfIdle(ctx context.Context, d time.Duration) bool {
+	if !r.mu.TryLock() {
+		return false
+	}
+	defer r.mu.Unlock()
+	if !r.alive() || time.Since(time.Unix(0, r.lastUsed.Load())) < d {
+		return false
+	}
+	r.closeLocked(ctx)
+	return true
+}
+
+// Restart 中斷正在跑的這一輪並關掉程序；下一則訊息會重新啟動並 --resume。
+func (r *Runner) Restart(ctx context.Context) error {
+	r.Interrupt()
+	return r.Close(ctx)
+}
+
+// closeLocked 關閉 stdin 讓 claude 正常結束；ctx 到期則強制砍掉。呼叫端需持有 mu。
+func (r *Runner) closeLocked(ctx context.Context) error {
 	if !r.alive() {
 		return nil
 	}
@@ -302,4 +361,65 @@ func (r *Runner) Close(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// Status 是 runner 目前的狀態快照。
+type Status struct {
+	Alive    bool
+	Busy     bool
+	PID      int
+	IdleFor  time.Duration // 距離上一輪結束多久（從沒跑過為 0）
+	RSSBytes int64         // claude 及其子程序（同一個 process group）的常駐記憶體總和
+}
+
+// Status 回傳狀態快照，不需等目前這一輪跑完。
+func (r *Runner) Status() Status {
+	st := Status{PID: int(r.pid.Load()), Busy: r.busy.Load()}
+	st.Alive = st.PID != 0
+	if lu := r.lastUsed.Load(); lu != 0 {
+		st.IdleFor = time.Since(time.Unix(0, lu))
+	}
+	if st.Alive {
+		st.RSSBytes = groupRSS(st.PID)
+	}
+	return st
+}
+
+// groupRSS 加總 process group pgid 底下所有程序的 RSS（讀 /proc，非 Linux 回 0）。
+func groupRSS(pgid int) int64 {
+	ents, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	page := int64(os.Getpagesize())
+	var total int64
+	for _, e := range ents {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		stat, err := os.ReadFile("/proc/" + e.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+		// 第 2 欄（程序名）可能含空白，從最後一個 ')' 之後開始切；之後依序是 state ppid pgrp
+		i := strings.LastIndexByte(string(stat), ')')
+		if i < 0 {
+			continue
+		}
+		f := strings.Fields(string(stat[i+1:]))
+		if len(f) < 3 || f[2] != strconv.Itoa(pgid) {
+			continue
+		}
+		statm, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
+		if err != nil {
+			continue
+		}
+		if sf := strings.Fields(string(statm)); len(sf) >= 2 {
+			if pages, err := strconv.ParseInt(sf[1], 10, 64); err == nil {
+				total += pages * page
+			}
+		}
+	}
+	return total
 }

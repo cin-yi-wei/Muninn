@@ -3,6 +3,9 @@
   "token_env": "DISCORD_BOT_TOKEN",
   "allowed_users": ["<你的 Discord user id>"],
   "permission_timeout": "30m",
+  "idle_timeout": "30m",
+  "memory_limit_mb": 2048,
+  "max_attempts": 3,
   "bindings": [
     {
       "name": "muninn-main",

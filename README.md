@@ -5,7 +5,7 @@ claude_cron 的重寫版：拿掉 tmux，改用 headless `claude -p`（stream-js
 
 名字取自奧丁的記憶渡鴉 Muninn——飛出去打探、回來報告。
 
-設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M3 完成，下一步 M4（scheduler、supervisor）。
+設計與決策見 [DESIGN.md](DESIGN.md)。狀態：M1～M3 完成，M4 進行中（supervisor 完成，scheduler 待做）。
 
 ## 使用方式
 
@@ -40,6 +40,23 @@ DISCORD_BOT_TOKEN=... ./bin/muninn -config muninn.json run
 - binding 設 `"auto_approve": true` 就直接放行、不貼頻道。逾時長度由 `permission_timeout` 設定。
 - 實作：claude 的 `--permission-prompt-tool` 指向 `muninn permission-mcp` 子程序（stdio MCP），
   子程序透過 `state_dir/permission.sock` 把請求轉給主程序決策。
+
+## 頻道裡的 Muninn 指令（M4）
+
+`!` 開頭、白名單內的人才能下，立刻執行、不交給 claude、不用等目前這一輪跑完：
+
+- `!status`：claude 程序狀態（執行中／閒置多久／沒在跑）、pid、記憶體、排隊中的訊息、等確認的權限
+- `!cancel`：中斷 claude 正在跑的這一輪，session 保留
+- `!restart`：中斷並關掉 claude 程序，下一則訊息會重新啟動並 `--resume`
+- `!help`
+
+## 自我保護（M4）
+
+- **閒置回收**：claude 程序閒置超過 `idle_timeout`（預設 30m，`"0"` 關閉）就關掉，下一則訊息再 `--resume`。
+- **記憶體上限**：claude 和它的子程序加總超過 `memory_limit_mb`（預設 2048，`0` 關閉）時，等這一輪跑完就重開。
+- **崩潰回放上限**：每則訊息送進 claude 前先記一次嘗試；同一則已經試了 `max_attempts` 次（預設 3）都沒跑完，
+  就放棄並在頻道說明，避免「這則訊息讓 Muninn 崩潰 → 重啟回放 → 再崩潰」的無限迴圈。正常關機不算一次。
+- Muninn 主程序本身建議用 systemd 跑，並設 `Restart=on-failure`、`MemoryMax=`。
 
 測試：
 

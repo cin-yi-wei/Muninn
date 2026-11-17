@@ -84,6 +84,19 @@ func (d Dir) Get(id string, v any) error {
 	return json.Unmarshal(data, v)
 }
 
+// Update 原子覆寫一則待處理 job（例如更新嘗試次數）。
+func (d Dir) Update(id string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(d.pending(), "."+id+".json.tmp")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(d.pending(), id+".json"))
+}
+
 // Done 把 job 從 pending/ 搬到 done/。
 func (d Dir) Done(id string) error {
 	return os.Rename(filepath.Join(d.pending(), id+".json"), filepath.Join(d.done(), id+".json"))

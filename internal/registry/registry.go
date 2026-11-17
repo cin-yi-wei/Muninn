@@ -20,8 +20,14 @@ type Config struct {
 	AllowedUsers []string `json:"allowed_users"` // 預設白名單，binding 沒寫時套用
 	ClaudeBin    string   `json:"claude_bin"`    // 選填
 	// PermissionTimeout 是等使用者回 y/n 的上限（Go duration 字串），預設 30m
-	PermissionTimeout string    `json:"permission_timeout"`
-	Bindings          []Binding `json:"bindings"`
+	PermissionTimeout string `json:"permission_timeout"`
+	// IdleTimeout：claude 程序閒置多久就關掉（下次來訊息再 --resume），"0" 表示不回收，預設 30m
+	IdleTimeout string `json:"idle_timeout"`
+	// MemoryLimitMB：單一 binding 的 claude（含子程序）記憶體上限，超過就在閒置時重開；0 表示不檢查，預設 2048
+	MemoryLimitMB *int `json:"memory_limit_mb"`
+	// MaxAttempts：同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
+	MaxAttempts int       `json:"max_attempts"`
+	Bindings    []Binding `json:"bindings"`
 }
 
 // Binding 是一個頻道的綁定。
@@ -92,6 +98,22 @@ func Load(path string) (Config, error) {
 	if c.PermissionTimeout == "" {
 		c.PermissionTimeout = "30m"
 	}
+	if c.IdleTimeout == "" {
+		c.IdleTimeout = "30m"
+	}
+	if d, err := time.ParseDuration(c.IdleTimeout); err != nil || d < 0 {
+		return Config{}, fmt.Errorf("registry: idle_timeout %q 不是合法的時間長度", c.IdleTimeout)
+	}
+	if c.MemoryLimitMB == nil {
+		def := 2048
+		c.MemoryLimitMB = &def
+	}
+	if *c.MemoryLimitMB < 0 {
+		return Config{}, fmt.Errorf("registry: memory_limit_mb 不能是負數")
+	}
+	if c.MaxAttempts <= 0 {
+		c.MaxAttempts = 3
+	}
 	if d, err := time.ParseDuration(c.PermissionTimeout); err != nil || d <= 0 {
 		return Config{}, fmt.Errorf("registry: permission_timeout %q 不是合法的時間長度", c.PermissionTimeout)
 	}
@@ -122,6 +144,20 @@ func Load(path string) (Config, error) {
 		names[b.Name], channels[b.ChannelID] = true, true
 	}
 	return c, nil
+}
+
+// Idle 回傳解析後的 idle_timeout（Load 已驗證過），0 表示不回收。
+func (c Config) Idle() time.Duration {
+	d, _ := time.ParseDuration(c.IdleTimeout)
+	return d
+}
+
+// MemLimitBytes 回傳記憶體上限（bytes），0 表示不檢查。
+func (c Config) MemLimitBytes() int64 {
+	if c.MemoryLimitMB == nil {
+		return 0
+	}
+	return int64(*c.MemoryLimitMB) << 20
 }
 
 // PermTimeout 回傳解析後的 permission_timeout（Load 已驗證過）。
