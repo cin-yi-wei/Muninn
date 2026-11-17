@@ -169,6 +169,9 @@ func (st *Store) load() ([]Schedule, error) {
 }
 
 func (st *Store) save(list []Schedule) error {
+	if list == nil {
+		list = []Schedule{} // 寫成 [] 而不是 null
+	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	data, _ := json.MarshalIndent(map[string]any{"schedules": list}, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(st.path), 0o755); err != nil {

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -78,6 +79,9 @@ func TestOneShotFiresOnceThenRemoved(t *testing.T) {
 	}
 	if list, _ := st.List(); len(list) != 0 {
 		t.Fatalf("單次任務觸發後應刪除：%+v", list)
+	}
+	if data, _ := os.ReadFile(st.path); !strings.Contains(string(data), `"schedules": []`) {
+		t.Fatalf("清空後應寫成空陣列：%s", data)
 	}
 	if _, err := st.Add(Schedule{Name: "late", At: "2026-11-17 13:00", Message: "x"}, false, at("2026-11-17 14:00")); err == nil {
 		t.Fatal("過去的時間應拒絕")
