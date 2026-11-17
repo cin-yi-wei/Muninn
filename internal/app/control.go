@@ -21,6 +21,7 @@ const helpText = "**Muninn 指令**（不會交給 claude）\n" +
 	"`!status`：claude 程序狀態、記憶體、排隊中的訊息\n" +
 	"`!cancel`：中斷 claude 正在跑的這一輪（session 保留）\n" +
 	"`!restart`：中斷並重啟 claude 程序（session 保留，下一則訊息會 --resume）\n" +
+	"`!schedules`：列出這個頻道的定時任務（要新增、修改直接跟 claude 說）\n" +
 	"`!help`：這份說明"
 
 // handleCommand 處理 ! 開頭的 Muninn 指令；回傳 true 表示已處理、不進 inbox。
@@ -33,6 +34,12 @@ func (a *App) handleCommand(content string) bool {
 	switch cmd {
 	case "!help":
 		go a.notify(helpText)
+	case "!schedules":
+		if a.Schedules == nil {
+			go a.notify("這個頻道沒有啟用定時任務")
+		} else {
+			go a.notify("🗓 **定時任務**\n" + a.scheduleList(time.Now()))
+		}
 	case "!status":
 		go a.notify(a.statusText())
 	case "!cancel":

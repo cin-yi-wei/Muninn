@@ -2,29 +2,9 @@ package scheduler
 
 import (
 	"errors"
-	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 )
-
-var tpe, _ = time.LoadLocation("Asia/Taipei")
-
-func at(s string) time.Time {
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", s, tpe)
-	if err != nil {
-		panic(err)
-	}
-	return t
-}
-
-func setup(t *testing.T, triggers ...Trigger) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), "triggers.json")
-	if err := Save(p, File{Triggers: triggers}); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
 
 type recorder struct {
 	fires []Fire
@@ -39,139 +19,162 @@ func (r *recorder) inject(f Fire) (bool, error) {
 	if r.seen == nil {
 		r.seen = map[string]bool{}
 	}
-	if r.seen[f.MessageID] {
+	if r.seen[f.ID] {
 		return false, nil
 	}
-	r.seen[f.MessageID] = true
+	r.seen[f.ID] = true
 	r.fires = append(r.fires, f)
 	return true, nil
 }
 
 func nolog(string, ...any) {}
 
-func TestFiresOnceAtDueTime(t *testing.T) {
-	p := setup(t, Trigger{Name: "am", Binding: "b", Cron: "0 9 * * *", Message: "早安", Enabled: true,
-		LastChecked: at("2026-11-17 08:59:30").UTC().Format(time.RFC3339)})
-	r := &recorder{}
-	if n, _ := RunOnce(p, at("2026-11-17 08:59:50"), r.inject, nolog); n != 0 {
-		t.Fatal("還沒到 9 點不該觸發")
-	}
-	if n, err := RunOnce(p, at("2026-11-17 09:00:10"), r.inject, nolog); n != 1 || err != nil {
-		t.Fatalf("9 點應觸發一次：%d %v", n, err)
-	}
-	if r.fires[0].MessageID != "sched:am:2026-11-17T01:00:00Z" || r.fires[0].Trigger.Message != "早安" {
-		t.Fatalf("觸發內容不對：%+v", r.fires[0])
-	}
-	if n, _ := RunOnce(p, at("2026-11-17 09:00:40"), r.inject, nolog); n != 0 {
-		t.Fatal("同一個時間點不該再觸發")
-	}
-	// 與 claude_cron 相同：last_checked 只在觸發（或跳過）時推進
-	f, _ := Load(p)
-	if f.Triggers[0].LastChecked != at("2026-11-17 09:00:10").UTC().Format(time.RFC3339) {
-		t.Fatalf("last_checked 應停在觸發那一輪：%s", f.Triggers[0].LastChecked)
-	}
-}
+func newStore(t *testing.T) *Store { return NewStore(t.TempDir(), "Asia/Taipei") }
 
-func TestCatchUp(t *testing.T) {
-	last := at("2026-11-14 12:00:00").UTC().Format(time.RFC3339) // 離線三天
-	p := setup(t,
-		Trigger{Name: "catch", Binding: "b", Cron: "0 9 * * *", Enabled: true, CatchUp: true, LastChecked: last},
-		Trigger{Name: "skip", Binding: "b", Cron: "0 9 * * *", Enabled: true, CatchUp: false, LastChecked: last},
-		Trigger{Name: "off", Binding: "b", Cron: "* * * * *", Enabled: false, LastChecked: last},
-	)
-	r := &recorder{}
-	if n, _ := RunOnce(p, at("2026-11-17 10:00:00"), r.inject, nolog); n != 1 || r.fires[0].Trigger.Name != "catch" {
-		t.Fatalf("只有 catch_up 的應補跑一次：%+v", r.fires)
-	}
-	// 補跑只跑一次，不會把錯過的三天各跑一遍
-	if n, _ := RunOnce(p, at("2026-11-17 10:00:30"), r.inject, nolog); n != 0 {
-		t.Fatal("補跑應只有一次")
-	}
-}
-
-func TestInjectFailureDoesNotAdvance(t *testing.T) {
-	last := at("2026-11-17 08:59:00").UTC().Format(time.RFC3339)
-	p := setup(t,
-		Trigger{Name: "x", Binding: "b", Cron: "0 9 * * *", Enabled: true, LastChecked: last},
-		Trigger{Name: "gone", Binding: "deleted", Cron: "0 9 * * *", Enabled: true, LastChecked: last},
-	)
-	r := &recorder{err: errors.New("磁碟滿了")}
-	_, _ = RunOnce(p, at("2026-11-17 09:00:10"), r.inject, nolog)
-	r.err = nil
-	unknown := func(f Fire) (bool, error) {
-		if f.Trigger.Binding == "deleted" {
-			return false, ErrUnknownBinding
-		}
-		return r.inject(f)
-	}
-	if n, _ := RunOnce(p, at("2026-11-17 09:00:40"), unknown, nolog); n != 1 {
-		t.Fatal("上一輪注入失敗，這一輪應重試同一個時間點")
-	}
-	f, _ := Load(p)
-	if f.Triggers[1].LastChecked != last {
-		t.Fatal("binding 不存在時不該推進 last_checked")
-	}
-}
-
-func TestSaveKeepsConcurrentEdits(t *testing.T) {
-	p := setup(t, Trigger{Name: "x", Binding: "b", Cron: "0 9 * * *", Enabled: true,
-		LastChecked: at("2026-11-17 08:59:00").UTC().Format(time.RFC3339)})
-	inject := func(f Fire) (bool, error) {
-		// 模擬觸發途中有人手動在 triggers.json 新增一個 trigger
-		cur, _ := Load(p)
-		cur.Triggers = append(cur.Triggers, Trigger{Name: "new", Binding: "b", Cron: "0 10 * * *"})
-		_ = Save(p, cur)
-		return true, nil
-	}
-	if _, err := RunOnce(p, at("2026-11-17 09:00:10"), inject, nolog); err != nil {
+func tick(t *testing.T, st *Store, now string, r *recorder) int {
+	t.Helper()
+	n, err := st.RunOnce(at(now), r.inject, nolog)
+	if err != nil {
 		t.Fatal(err)
 	}
-	f, _ := Load(p)
-	if len(f.Triggers) != 2 || f.Triggers[1].Name != "new" {
-		t.Fatalf("寫回 last_checked 時不該蓋掉手動新增的 trigger：%+v", f.Triggers)
+	return n
+}
+
+func TestAddStartsFromNow(t *testing.T) {
+	st := newStore(t)
+	// 10 點才加：今天 9 點不算錯過
+	if _, err := st.Add(Schedule{Name: "am", Cron: "0 9 * * *", Message: "早安", CatchUp: true}, false, at("2026-11-17 10:00")); err != nil {
+		t.Fatal(err)
+	}
+	r := &recorder{}
+	if tick(t, st, "2026-11-17 10:00", r) != 0 || tick(t, st, "2026-11-18 08:59", r) != 0 {
+		t.Fatal("不該提早觸發")
+	}
+	if tick(t, st, "2026-11-18 09:00", r) != 1 || r.fires[0].ID != "am@20261118T0100Z" || r.fires[0].Schedule.Message != "早安" {
+		t.Fatalf("隔天 9 點應觸發：%+v", r.fires)
+	}
+	if tick(t, st, "2026-11-18 09:00", r) != 0 {
+		t.Fatal("同一分鐘不該重複")
+	}
+	s, _ := st.Get("am")
+	if s.LastFired == "" {
+		t.Fatal("應記錄上次觸發")
+	}
+	if _, err := st.Add(Schedule{Name: "am", Cron: "@daily", Message: "x"}, false, at("2026-11-18 10:00")); err == nil {
+		t.Fatal("同名不加 replace 應拒絕")
+	}
+}
+
+func TestOneShotFiresOnceThenRemoved(t *testing.T) {
+	st := newStore(t)
+	if _, err := st.Add(Schedule{Name: "remind", At: "2026-11-17 15:00", Message: "開會"}, false, at("2026-11-17 14:00")); err != nil {
+		t.Fatal(err)
+	}
+	r := &recorder{}
+	tick(t, st, "2026-11-17 14:59", r)
+	// 就算 Muninn 剛好停了一小時，單次任務回來也要補
+	if tick(t, st, "2026-11-17 16:00", r) != 1 {
+		t.Fatal("單次任務應觸發")
+	}
+	if list, _ := st.List(); len(list) != 0 {
+		t.Fatalf("單次任務觸發後應刪除：%+v", list)
+	}
+	if _, err := st.Add(Schedule{Name: "late", At: "2026-11-17 13:00", Message: "x"}, false, at("2026-11-17 14:00")); err == nil {
+		t.Fatal("過去的時間應拒絕")
+	}
+}
+
+func TestCatchUpOnlyOnceAndSkip(t *testing.T) {
+	st := newStore(t)
+	now := at("2026-11-14 12:00")
+	_, _ = st.Add(Schedule{Name: "catch", Cron: "0 9 * * *", Message: "x", CatchUp: true}, false, now)
+	_, _ = st.Add(Schedule{Name: "skip", Cron: "0 9 * * *", Message: "x"}, false, now)
+	r := &recorder{}
+	// 離線三天後回來
+	if tick(t, st, "2026-11-17 10:00", r) != 1 || r.fires[0].ID != "catch@20261117T0100Z" {
+		t.Fatalf("只有 catch_up 的補跑一次，而且是最近一次：%+v", r.fires)
+	}
+	if tick(t, st, "2026-11-17 10:01", r) != 0 {
+		t.Fatal("補跑只跑一次")
+	}
+}
+
+func TestShortDelayStillFires(t *testing.T) {
+	st := newStore(t)
+	_, _ = st.Add(Schedule{Name: "a", Cron: "0 9 * * *", Message: "x"}, false, at("2026-11-17 08:00"))
+	r := &recorder{}
+	if tick(t, st, "2026-11-17 09:03", r) != 1 {
+		t.Fatal("寬限內的延遲應照樣觸發")
+	}
+}
+
+func TestInjectFailureRetries(t *testing.T) {
+	st := newStore(t)
+	_, _ = st.Add(Schedule{Name: "a", Cron: "0 9 * * *", Message: "x"}, false, at("2026-11-17 08:00"))
+	r := &recorder{err: errors.New("磁碟滿了")}
+	tick(t, st, "2026-11-17 09:00", r)
+	r.err = nil
+	if tick(t, st, "2026-11-17 09:01", r) != 1 || r.fires[0].ID != "a@20261117T0100Z" {
+		t.Fatalf("應重試同一個時間點：%+v", r.fires)
+	}
+}
+
+func TestPauseResumeAndRemove(t *testing.T) {
+	st := newStore(t)
+	_, _ = st.Add(Schedule{Name: "a", Cron: "0 9 * * *", Message: "x", CatchUp: true}, false, at("2026-11-17 08:00"))
+	if err := st.SetPaused("a", true, at("2026-11-17 08:00")); err != nil {
+		t.Fatal(err)
+	}
+	r := &recorder{}
+	if tick(t, st, "2026-11-17 09:00", r) != 0 {
+		t.Fatal("暫停中不該觸發")
+	}
+	_ = st.SetPaused("a", false, at("2026-11-17 10:00"))
+	if tick(t, st, "2026-11-17 10:00", r) != 0 {
+		t.Fatal("恢復後不該補跑暫停期間錯過的")
+	}
+	if err := st.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Remove("a"); err == nil {
+		t.Fatal("刪不存在的應報錯")
+	}
+}
+
+func TestTimezone(t *testing.T) {
+	st := newStore(t)
+	_, _ = st.Add(Schedule{Name: "ny", Cron: "30 9 * * *", Message: "x", Timezone: "America/New_York"}, false, at("2026-11-17 20:00"))
+	r := &recorder{}
+	if tick(t, st, "2026-11-17 22:29", r) != 0 || tick(t, st, "2026-11-17 22:30", r) != 1 {
+		t.Fatal("紐約 09:30 = 台北 22:30")
 	}
 }
 
 func TestValidate(t *testing.T) {
-	if err := Validate(Trigger{Name: "a", Binding: "b", Cron: "0 9 * * *"}); err != nil {
-		t.Fatal(err)
+	ok := []Schedule{{Name: "a", Cron: "@daily", Message: "x"}, {Name: "b", At: "2026-11-18T09:00:00+08:00", Message: "x"}}
+	for _, s := range ok {
+		if err := Validate(&s, "Asia/Taipei"); err != nil {
+			t.Errorf("%+v: %v", s, err)
+		}
 	}
-	for _, tr := range []Trigger{
-		{Name: "a", Binding: "b", Cron: "0 9 * *"},
-		{Name: "a", Binding: "b", Cron: "0 9 * * *", Timezone: "Mars/Base"},
-		{Binding: "b", Cron: "0 9 * * *"},
+	for want, s := range map[string]Schedule{
+		"5 個欄位":   {Name: "a", Cron: "0 9 * *", Message: "x"},
+		"時區":      {Name: "a", Cron: "0 9 * * *", Message: "x", Timezone: "Mars/Base"},
+		"message": {Name: "a", Cron: "0 9 * * *"},
+		"名稱":      {Name: "../x", Cron: "0 9 * * *", Message: "x"},
+		"擇一":      {Name: "a", Cron: "0 9 * * *", At: "2026-11-18 09:00", Message: "x"},
+		"要給":      {Name: "a", Message: "x"},
+		"看不懂":     {Name: "a", At: "明天早上", Message: "x"},
 	} {
-		if Validate(tr) == nil {
-			t.Errorf("應判為不合法：%+v", tr)
+		if err := Validate(&s, ""); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("預期錯誤含 %q，得到 %v", want, err)
 		}
 	}
 }
 
-func TestLoadMissingFile(t *testing.T) {
-	f, err := Load(filepath.Join(t.TempDir(), "none.json"))
-	if err != nil || len(f.Triggers) != 0 {
-		t.Fatalf("檔案不存在應當作沒有 trigger：%+v %v", f, err)
-	}
-}
-
-func TestTriggerWithoutLastChecked(t *testing.T) {
-	// 手寫的 trigger：只有 created_at
-	p := setup(t, Trigger{Name: "a", Binding: "b", Cron: "22 17 * * *", Enabled: true,
-		CreatedAt: at("2026-11-17 17:20:16").UTC().Format(time.RFC3339)})
-	r := &recorder{}
-	if n, _ := RunOnce(p, at("2026-11-17 17:22:20"), r.inject, nolog); n != 1 {
-		t.Fatal("沒有 last_checked 時應從 created_at 起算並觸發")
-	}
-	// 什麼時間都沒有：第一輪只記下起算點，到期後的下一輪觸發
-	p = setup(t, Trigger{Name: "b", Binding: "b", Cron: "22 17 * * *", Enabled: true})
-	r = &recorder{}
-	if n, _ := RunOnce(p, at("2026-11-17 17:20:00"), r.inject, nolog); n != 0 {
-		t.Fatal("第一輪不該觸發")
-	}
-	if f, _ := Load(p); f.Triggers[0].LastChecked == "" {
-		t.Fatal("第一輪應寫回起算點")
-	}
-	if n, _ := RunOnce(p, at("2026-11-17 17:22:10"), r.inject, nolog); n != 1 {
-		t.Fatal("到期後應觸發")
+func TestDescribe(t *testing.T) {
+	d := Describe(Schedule{Name: "am", Cron: "0 9 * * *", Message: "早安", Paused: true}, "Asia/Taipei", at("2026-11-17 10:00"))
+	if !strings.Contains(d, "11-18 09:00") || !strings.Contains(d, "已暫停") {
+		t.Fatal(d)
 	}
 }

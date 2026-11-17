@@ -176,3 +176,37 @@ func TestBrokerSurvivesHandlerPanic(t *testing.T) {
 		t.Fatalf("panic 之後 broker 應該還活著：%+v", d)
 	}
 }
+
+func TestMCPChannelToolsRouted(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "p.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan string, 1)
+	go func() {
+		_ = ServeAll(ctx, socket, func(context.Context, Request) Decision { return Deny("x") },
+			func(_ context.Context, binding, method string, input json.RawMessage) ToolResult {
+				got <- binding + " " + method + " " + string(input)
+				return ToolResult{Text: "已建立 am"}
+			})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	call := mcpSession(t, socket)
+	tools := call(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)["result"].(map[string]any)["tools"].([]any)
+	names := map[string]bool{}
+	for _, tl := range tools {
+		names[tl.(map[string]any)["name"].(string)] = true
+	}
+	for _, n := range []string{ToolName, "schedule_add", "schedule_list", "schedule_remove", "schedule_pause", "schedule_run_now"} {
+		if !names[n] {
+			t.Errorf("tools/list 缺 %s", n)
+		}
+	}
+	resp := call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"schedule_add","arguments":{"name":"am","cron":"@daily","message":"x"}}}`)
+	r := resp["result"].(map[string]any)
+	if r["content"].([]any)[0].(map[string]any)["text"] != "已建立 am" || r["isError"] != false {
+		t.Fatalf("工具結果不對：%v", resp)
+	}
+	if g := <-got; !strings.HasPrefix(g, "bind-1 schedule_add ") || !strings.Contains(g, `"cron":"@daily"`) {
+		t.Fatalf("主程序收到的呼叫不對：%s", g)
+	}
+}

@@ -23,8 +23,8 @@ DISCORD_BOT_TOKEN=... ./bin/muninn -config muninn.json run
 - 每個 binding 一個頻道、一個 worktree、一個長駐 claude session；整個 bot 共用一條 Gateway 連線。
 - worktree 不存在會自動 `git worktree add`（分支不存在就從 `base` 開）。已存在但分支不對時會報錯，**不會自動切分支**。
 - 狀態放在 `state_dir/bindings/<name>/`：inbox/outbox 佇列、`session.json`。崩潰重啟會回放 pending 裡的 job，並用 `--resume` 接回 session。
-- `adopt` 之後，下一則訊息前面會自動附上交接說明（告訴 claude 不用再照 claude_cron 的檔案協定回覆）。
-  **同一個 session 同時只能有一個程序在寫**：原本的 claude_cron binding 一定要先停掉再 `run`。
+- `adopt` 之後，下一則訊息前面會自動附上交接說明（告訴 claude 之後直接回文字）。
+  **同一個 session 同時只能有一個程序在寫**：原本在用它的程序一定要先停掉再 `run`。
 
 權限確認（M3）：claude 要執行需要確認的工具時，Muninn 會把它貼到頻道：
 
@@ -48,23 +48,27 @@ DISCORD_BOT_TOKEN=... ./bin/muninn -config muninn.json run
 - `!status`：claude 程序狀態（執行中／閒置多久／沒在跑）、pid、記憶體、排隊中的訊息、等確認的權限
 - `!cancel`：中斷 claude 正在跑的這一輪，session 保留
 - `!restart`：中斷並關掉 claude 程序，下一則訊息會重新啟動並 `--resume`
+- `!schedules`：列出這個頻道的定時任務
 - `!help`
 
 ## 定時任務（M4）
 
-格式沿用 claude_cron 的 `triggers.json`，放在 `triggers_file`（預設 `<state_dir>/triggers.json`）：
+直接在頻道跟 claude 說就好，例如「平日早上 9 點提醒我看 CI」「明天下午三點提醒我開會」。
+Muninn 會給每個頻道裡的 claude 一組工具，管理**自己這個頻道**的任務：
 
-```json
-{"triggers": [{"name": "am-ci", "binding": "muninn-main", "cron": "0 9 * * 1-5", "timezone": "Asia/Taipei",
-               "message": "早安，幫我看一下昨天的 CI", "catch_up": false, "enabled": true}]}
-```
+| 工具 | 用途 |
+|---|---|
+| `schedule_add` | 建立任務：重複的給 `cron`（標準 5 欄，也接受 `@daily`、`MON-FRI`），單次的給 `at`（觸發後自動刪除） |
+| `schedule_list` | 列出任務與下次觸發時間（唯讀，不用確認） |
+| `schedule_remove` / `schedule_pause` | 刪除／暫停、恢復 |
+| `schedule_run_now` | 立刻觸發一次，測試用 |
 
-- 到期就當成使用者在頻道傳了 `message`，走同一條佇列。每 30 秒檢查一次，可以直接手改檔案（Muninn 寫回時只更新 `last_checked`）。
-- `catch_up`：Muninn 沒在跑時錯過的時間點，回來補跑一次（`false` 則錯過超過 10 分鐘就跳過）。
+- 時間到就把任務內容當成一則訊息送進這個頻道的對話（標明是哪個任務觸發的），頻道上會出現「⏰ 定時任務 `名稱` 觸發」。
+- 建立、刪除、暫停都會在頻道貼一行通知；這些工具跟其他工具一樣會先跳權限確認（`schedule_list` 除外）。
+- `catch_up`：Muninn 沒在跑時錯過的時間點，回來補跑一次（只補最近一次）；不補跑的錯過超過 5 分鐘就跳過。單次任務一律補跑。
 - 同一個排定時間點只會執行一次（崩潰、重啟都不會重複）。排程訊息不受白名單限制，也**不會**拿去回權限確認。
-- `muninn triggers list`：列出所有任務與下次觸發時間。`muninn check` 會驗證 cron、時區、binding。
-- `muninn triggers import <claude_cron 的 triggers.json>`：只匯入本設定有的 binding，不補跑過去的時間點。
-  claude_cron 那邊同名的若還開著，兩邊會各觸發一次。
+- 任務存在 `state_dir/bindings/<name>/schedules.json`。預設時區由設定檔的 `timezone` 決定。
+- 頻道裡打 `!schedules` 看清單；`muninn schedules` 在終端機列出所有頻道的任務。
 
 ## 自我保護（M4）
 

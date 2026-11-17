@@ -137,11 +137,11 @@ func FindLatest(claudeHome, workdir string) (Candidate, error) {
 	return best, nil
 }
 
-// DefaultHandoff 是接手舊 claude_cron session 時，第一則訊息前面附上的說明。
-// 舊歷史裡全是「讀 current_job.json、寫 outbox JSON」的檔案協定，不講清楚它會照舊去寫檔。
-const DefaultHandoff = `[Muninn 交接說明] 這個 session 已經從 claude_cron 交接給 Muninn。
+// DefaultHandoff 是接手既有 session 時，第一則訊息前面附上的說明。
+// 舊歷史裡可能有別的回覆方式（例如寫檔、呼叫指令送訊息），不講清楚它會照舊做。
+const DefaultHandoff = `[Muninn 交接說明] 這個 session 從現在起由 Muninn 驅動，對應一個聊天頻道。
 從這則開始，使用者的訊息會直接以原文送進來，你的最終回覆文字會直接送回頻道。
-不需要再讀 current_job.json、不需要寫 outbox JSON 檔，也不要呼叫任何發送訊息的指令。
+不需要再用以前的方式回覆（寫回覆檔、呼叫指令送訊息等），直接回答就好。
 以下是使用者的新訊息：
 
 `

@@ -17,6 +17,7 @@ import (
 	"muninn/internal/discord"
 	"muninn/internal/queue"
 	"muninn/internal/runner"
+	"muninn/internal/scheduler"
 	"muninn/internal/session"
 )
 
@@ -62,10 +63,11 @@ type App struct {
 	PermissionTimeout time.Duration
 	Asker             Asker
 	Sender            Sender
-	Prompter          Prompter   // 權限確認用（帶按鈕的訊息）
-	Ctl               Controller // 選填：!status / !cancel / !restart 與閒置、記憶體回收用
-	SessionID         string     // 顯示用
-	MaxAttempts       int        // 同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
+	Prompter          Prompter         // 權限確認用（帶按鈕的訊息）
+	Ctl               Controller       // 選填：!status / !cancel / !restart 與閒置、記憶體回收用
+	SessionID         string           // 顯示用
+	MaxAttempts       int              // 同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
+	Schedules         *scheduler.Store // 選填：這個頻道的定時任務
 	Logf              func(format string, args ...any)
 
 	inbox, outbox queue.Dir

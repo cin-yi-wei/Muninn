@@ -90,6 +90,9 @@ func (a *App) RequestPermission(ctx context.Context, req permission.Request) per
 		a.logf("permission: auto_approve 放行 %s", req.ToolName)
 		return permission.Allow(req.Input)
 	}
+	if req.ToolName == "mcp__"+permission.ServerName+"__schedule_list" {
+		return permission.Allow(req.Input) // 唯讀，不用問
+	}
 	keys := permission.Keys(req.ToolName, req.Input)
 	if a.store().Covers(keys) {
 		a.logf("permission: 已記住 %v，放行", keys)

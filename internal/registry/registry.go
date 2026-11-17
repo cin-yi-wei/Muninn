@@ -27,9 +27,9 @@ type Config struct {
 	MemoryLimitMB *int `json:"memory_limit_mb"`
 	// MaxAttempts：同一則訊息最多送進 claude 幾次（防崩潰無限回放），預設 3
 	MaxAttempts int `json:"max_attempts"`
-	// TriggersFile：定時任務設定（格式同 claude_cron 的 triggers.json），預設 <state_dir>/triggers.json
-	TriggersFile string    `json:"triggers_file"`
-	Bindings     []Binding `json:"bindings"`
+	// Timezone：定時任務的預設時區（IANA 名稱），空字串用機器時區
+	Timezone string    `json:"timezone"`
+	Bindings []Binding `json:"bindings"`
 }
 
 // Binding 是一個頻道的綁定。
@@ -120,10 +120,11 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("registry: permission_timeout %q 不是合法的時間長度", c.PermissionTimeout)
 	}
 	c.StateDir = expand(c.StateDir)
-	if c.TriggersFile == "" {
-		c.TriggersFile = filepath.Join(c.StateDir, "triggers.json")
+	if c.Timezone != "" {
+		if _, err := time.LoadLocation(c.Timezone); err != nil {
+			return Config{}, fmt.Errorf("registry: timezone %q 不合法", c.Timezone)
+		}
 	}
-	c.TriggersFile = expand(c.TriggersFile)
 	c.ClaudeBin = expand(c.ClaudeBin)
 
 	names, channels := map[string]bool{}, map[string]bool{}

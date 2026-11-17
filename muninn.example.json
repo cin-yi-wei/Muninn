@@ -6,7 +6,7 @@
   "idle_timeout": "30m",
   "memory_limit_mb": 2048,
   "max_attempts": 3,
-  "triggers_file": "~/.local/state/muninn/triggers.json",
+  "timezone": "Asia/Taipei",
   "bindings": [
     {
       "name": "muninn-main",

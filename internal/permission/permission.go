@@ -73,6 +73,11 @@ type Handler func(ctx context.Context, req Request) Decision
 
 // Serve 在 unix socket 上收請求，每條連線一則請求、一則回覆。ctx 取消時關閉。
 func Serve(ctx context.Context, socket string, h Handler) error {
+	return ServeAll(ctx, socket, h, nil)
+}
+
+// ServeAll 同 Serve，另外處理頻道工具呼叫（tools 為 nil 時一律回錯誤）。
+func ServeAll(ctx context.Context, socket string, h Handler, tools ToolHandler) error {
 	_ = os.Remove(socket) // 上次沒清掉的殘留 socket 檔
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
@@ -92,15 +97,25 @@ func Serve(ctx context.Context, socket string, h Handler) error {
 			}
 			return err
 		}
-		go handleConn(ctx, conn, h)
+		go handleConn(ctx, conn, h, tools)
 	}
 }
 
-func handleConn(ctx context.Context, conn net.Conn, h Handler) {
+func handleConn(ctx context.Context, conn net.Conn, h Handler, tools ToolHandler) {
 	defer conn.Close()
 	var req Request
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil || json.Unmarshal(line, &req) != nil {
+		return
+	}
+	var tc toolCall
+	if json.Unmarshal(line, &tc) == nil && tc.Method != "" {
+		res := ToolResult{Text: "這個 Muninn 沒有提供頻道工具", IsError: true}
+		if tools != nil {
+			res = safeTool(ctx, tools, tc)
+		}
+		out, _ := json.Marshal(res)
+		_, _ = conn.Write(append(out, '\n'))
 		return
 	}
 	// 子程序斷線（claude 被砍）時取消等待，免得一直掛在頻道上等 y/n
@@ -124,6 +139,17 @@ func safeHandle(ctx context.Context, h Handler, req Request) (d Decision) {
 		}
 	}()
 	return h(ctx, req)
+}
+
+// safeTool 執行工具；panic 時回錯誤，不拖垮主程序。
+func safeTool(ctx context.Context, h ToolHandler, tc toolCall) (res ToolResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "tool panic（%s）: %v\n%s", tc.Method, r, debug.Stack())
+			res = ToolResult{Text: fmt.Sprintf("Muninn 內部錯誤：%v", r), IsError: true}
+		}
+	}()
+	return h(ctx, tc.Binding, tc.Method, tc.Input)
 }
 
 // ---------- 子程序端：stdio MCP server ----------
@@ -161,7 +187,7 @@ func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding 
 				"serverInfo":      map[string]any{"name": ServerName, "version": "0.3"},
 			})
 		case "tools/list":
-			err = reply(m.ID, map[string]any{"tools": []any{map[string]any{
+			tools := []any{map[string]any{
 				"name":        ToolName,
 				"description": "Muninn 權限確認：把工具呼叫貼到頻道等使用者回覆",
 				"inputSchema": map[string]any{
@@ -173,13 +199,24 @@ func ServeMCP(ctx context.Context, in io.Reader, out io.Writer, socket, binding 
 					},
 					"required": []string{"tool_name", "input"},
 				},
-			}}})
+			}}
+			for _, t := range Tools {
+				tools = append(tools, t)
+			}
+			err = reply(m.ID, map[string]any{"tools": tools})
 		case "tools/call":
 			var p struct {
-				Arguments Request `json:"arguments"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
-			req := p.Arguments
+			if IsChannelTool(p.Name) {
+				res := callTool(ctx, socket, binding, p.Name, p.Arguments)
+				err = reply(m.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": res.Text}}, "isError": res.IsError})
+				break
+			}
+			var req Request
+			_ = json.Unmarshal(p.Arguments, &req)
 			req.Binding = binding
 			d := ask(ctx, socket, req)
 			text, _ := json.Marshal(d)
