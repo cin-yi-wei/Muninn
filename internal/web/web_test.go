@@ -23,8 +23,10 @@ import (
 
 type nopAsker struct{}
 
-func (nopAsker) Ask(context.Context, string) (runner.Reply, error) { return runner.Reply{Text: "ok"}, nil }
-func (nopAsker) Close(context.Context) error                       { return nil }
+func (nopAsker) Ask(context.Context, string) (runner.Reply, error) {
+	return runner.Reply{Text: "ok"}, nil
+}
+func (nopAsker) Close(context.Context) error { return nil }
 
 type nopOut struct{}
 
