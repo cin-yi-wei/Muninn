@@ -357,6 +357,8 @@ func (d *daemon) startBinding(cfg registry.Config, b registry.Binding) (*liveBin
 	if err := a.Init(); err != nil {
 		return nil, err
 	}
+	// 背景 subagent／背景指令做完時 claude 會自己多跑一輪，那一輪的回覆直接貼到頻道
+	r.SetOnSpontaneous(a.Spontaneous)
 	if err := session.MarkRunning(stateDir); err != nil {
 		return nil, err
 	}

@@ -233,3 +233,20 @@ func TestSenderGivesUpOnPermanentFailure(t *testing.T) {
 		return len(ids) == 0
 	})
 }
+
+func TestSpontaneousReplyPostedToChannel(t *testing.T) {
+	snd := &fakeSender{}
+	a := newApp(t, t.TempDir(), &fakeAsker{}, snd, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go a.RunSender(ctx)
+	a.Spontaneous(runner.Reply{Text: "🔔 背景 agent 回來了"})
+	a.Spontaneous(runner.Reply{Text: "  "}) // 空的不貼
+	a.Spontaneous(runner.Reply{Text: "炸了", IsError: true, Subtype: "error_during_execution"})
+	waitFor(t, func() bool { return len(snd.snapshot()) >= 2 })
+	time.Sleep(100 * time.Millisecond)
+	out := snd.snapshot()
+	if len(out) != 2 || out[0].text != "🔔 背景 agent 回來了" || out[0].replyTo != "" || !strings.Contains(out[1].text, "error_during_execution") {
+		t.Fatalf("%+v", out)
+	}
+}

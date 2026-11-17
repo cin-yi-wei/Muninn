@@ -104,7 +104,7 @@ func TestToolBlockShowsChanges(t *testing.T) {
 	if e := toolBlock("Edit", json.RawMessage(`{"old_string":"a\r\n","new_string":"b\n"}`)); e != "```diff\n- a\n+ b\n```" {
 		t.Fatalf("diff 結尾換行不該變成空的 -/+ 行：%q", e)
 	}
-	if toolBlock("Bash", json.RawMessage(`{"command":"ls"}`)) != ""|| toolBlock("Edit", json.RawMessage(`{}`)) != "" {
+	if toolBlock("Bash", json.RawMessage(`{"command":"ls"}`)) != "" || toolBlock("Edit", json.RawMessage(`{}`)) != "" {
 		t.Fatal("非改檔工具或沒有內容時不該有區塊")
 	}
 	var big []string

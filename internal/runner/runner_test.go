@@ -293,3 +293,111 @@ while IFS= read -r line; do sleep 30; done
 	}
 	r.Interrupt()
 }
+
+// replayClaude 模擬真的 claude 2.1.326（實測 2026-11-17）：
+//   - 每則 stdin 訊息先回放成 {"type":"user","isReplay":true,"uuid":<送進來的 uuid>}，再跑那一輪
+//   - 訊息含 BG 時，那一輪結束後過一下子，自己多跑一輪（背景任務完成通知），開頭是 task_notification，沒有回放
+//   - 訊息含 BUSY 時，先自己跑完一輪通知，才回放並處理這則（模擬訊息送到時 claude 正在處理通知）
+const replayClaude = `#!/bin/sh
+n=0
+echo '{"type":"system","subtype":"init","apiKeySource":"none"}'
+while IFS= read -r line; do
+  n=$((n+1))
+  uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+  case "$line" in *BUSY*)
+    echo '{"type":"system","subtype":"task_notification","task_id":"t0"}'
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"通知那輪"}]}}'
+    echo '{"type":"result","subtype":"success","result":"spont-busy","total_cost_usd":0.5}'
+  ;; esac
+  echo "{\"type\":\"user\",\"isReplay\":true,\"uuid\":\"$uuid\",\"message\":{\"role\":\"user\",\"content\":\"x\"}}"
+  case "$line" in *BG*)
+    echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"id":"t1"}]}'
+  ;; esac
+  echo "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"turn=$n\",\"total_cost_usd\":0.$n}"
+  case "$line" in *BG*)
+    sleep 0.3
+    echo '{"type":"system","subtype":"task_notification","task_id":"t1"}'
+    echo '{"type":"system","subtype":"background_tasks_changed","tasks":[]}'
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"背景"},{"type":"tool_use","name":"Read","input":{"file_path":"/x"}}]}}'
+    echo '{"type":"result","subtype":"success","result":"背景做完了","total_cost_usd":0.9}'
+  ;; esac
+done
+`
+
+func TestSpontaneousTurnGoesToCallback(t *testing.T) {
+	bin, dir := fakeClaude(t, replayClaude)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	got := make(chan Reply, 4)
+	r.SetOnSpontaneous(func(rep Reply) { got <- rep })
+
+	rep, err := r.Ask(ctx5s(t), "派 BG")
+	if err != nil || rep.Text != "turn=1" {
+		t.Fatalf("第一輪：%+v %v", rep, err)
+	}
+	if st := r.Status(); st.BackgroundTasks != 1 {
+		t.Fatalf("應記到 1 個背景任務：%+v", st)
+	}
+	if r.CloseIfIdle(context.Background(), 0) {
+		t.Fatal("還有背景任務在跑，不該閒置回收")
+	}
+	select {
+	case s := <-got:
+		if s.Text != "背景做完了" {
+			t.Fatalf("自發回合內容錯了：%+v", s)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("背景任務完成的回合沒有送到 callback")
+	}
+	// 下一則一定要拿到自己的回覆，不能拿到上一輪留下的
+	rep, err = r.Ask(ctx5s(t), "下一則")
+	if err != nil || rep.Text != "turn=2" {
+		t.Fatalf("錯位了：%+v %v", rep, err)
+	}
+	if st := r.Status(); st.BackgroundTasks != 0 {
+		t.Fatalf("背景任務結束後應歸零：%+v", st)
+	}
+}
+
+func TestMessageArrivesDuringSpontaneousTurn(t *testing.T) {
+	bin, dir := fakeClaude(t, replayClaude)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	got := make(chan Reply, 4)
+	r.SetOnSpontaneous(func(rep Reply) { got <- rep })
+	if _, err := r.Ask(ctx5s(t), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r.Ask(ctx5s(t), "BUSY")
+	if err != nil || rep.Text != "turn=2" {
+		t.Fatalf("回放之前的 result 屬於自發回合，不能算成這則的回覆：%+v %v", rep, err)
+	}
+	select {
+	case s := <-got:
+		if s.Text != "spont-busy" {
+			t.Fatalf("%+v", s)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("自發回合沒送到 callback")
+	}
+}
+
+func TestReplayFlagAndUUIDSent(t *testing.T) {
+	bin, dir := fakeClaude(t, `#!/bin/sh
+echo "$@" >> "$(dirname "$0")/args.log"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$(dirname "$0")/stdin.log"
+  echo '{"type":"result","subtype":"success","result":"ok"}'
+done
+`)
+	r := New(Config{Bin: bin, Workdir: dir, SessionID: "u"})
+	defer r.Close(context.Background())
+	if _, err := r.Ask(ctx5s(t), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	args := string(must(os.ReadFile(filepath.Join(dir, "args.log"))))
+	in := string(must(os.ReadFile(filepath.Join(dir, "stdin.log"))))
+	if !strings.Contains(args, "--replay-user-messages") || !strings.Contains(in, `"uuid":"`) {
+		t.Fatalf("要開回放並帶 uuid：args=%s stdin=%s", args, in)
+	}
+}

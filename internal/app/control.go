@@ -115,6 +115,8 @@ func (a *App) statusText() string {
 		switch {
 		case st.Busy:
 			b.WriteString("claude：🟢 執行中")
+		case st.Spontaneous:
+			b.WriteString("claude：🟢 處理背景任務的回報中")
 		case st.Alive:
 			fmt.Fprintf(&b, "claude：🟡 閒置 %s", st.IdleFor.Round(time.Second))
 		default:
@@ -122,6 +124,9 @@ func (a *App) statusText() string {
 		}
 		if st.Alive {
 			fmt.Fprintf(&b, "，pid %d，記憶體 %d MB", st.PID, st.RSSBytes>>20)
+		}
+		if st.BackgroundTasks > 0 {
+			fmt.Fprintf(&b, "\n背景任務：%d 個還在跑（做完會自動回報到頻道；這段時間不做閒置回收）", st.BackgroundTasks)
 		}
 		b.WriteString("\n")
 	}

@@ -255,6 +255,25 @@ func (a *App) RunWorker(ctx context.Context) error {
 	})
 }
 
+// Spontaneous 把 claude 自發回合（背景 subagent／背景指令做完後它自己多跑的一輪）的回覆貼到頻道。
+// 由 runner 的讀取 goroutine 呼叫，只寫 outbox、叫醒 sender，不阻塞。
+func (a *App) Spontaneous(rep runner.Reply) {
+	text := strings.TrimSpace(rep.Text)
+	if rep.IsError {
+		text = fmt.Sprintf("⚠️ Muninn：claude 處理背景任務回報時出錯（%s）\n%s", rep.Subtype, rep.Text)
+	}
+	if text == "" {
+		return
+	}
+	id := time.Now().UTC().Format("20060102T150405.000000000") + "-spontaneous"
+	if err := a.outbox.Put(id, OutboxJob{ID: id, ChannelID: a.ChannelID, Text: text}); err != nil {
+		a.logf("spontaneous: 寫入 outbox 失敗: %v", err)
+		return
+	}
+	a.logf("spontaneous: 背景任務回報的回合完成，cost≈$%.4f（程序累計 $%.4f）", rep.CostUSD, rep.TotalCostUSD)
+	wake(a.wakeSender)
+}
+
 // finish 把回覆寫進 outbox，並把 inbox job 標成完成。
 func (a *App) finish(id string, job InboxJob, text string) error {
 	out := OutboxJob{ID: id, ChannelID: job.ChannelID, Text: text}
