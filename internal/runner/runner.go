@@ -467,6 +467,13 @@ func (r *Runner) Ask(ctx context.Context, text string) (rep Reply, err error) {
 	line, _ := json.Marshal(msg)
 	if _, err := r.stdin.Write(append(line, '\n')); err != nil {
 		release()
+		// 多半是 claude 一啟動就退出了（例如登入失效）：等它收尾，回報它在 stderr 說了什麼，
+		// 而不是只回 broken pipe
+		select {
+		case <-r.done:
+			return Reply{}, r.exitedErr()
+		case <-time.After(2 * time.Second):
+		}
 		r.killLocked()
 		return Reply{}, fmt.Errorf("runner: 寫入 stdin 失敗: %w", err)
 	}
@@ -495,14 +502,19 @@ func (r *Runner) Ask(ctx context.Context, text string) (rep Reply, err error) {
 						return r.reply(ev, assistantText), nil
 					}
 				default:
-					if tail := strings.TrimSpace(r.stderrTail.String()); tail != "" {
-						return Reply{}, fmt.Errorf("%w: %s", ErrExited, lastLines(tail, 3))
-					}
-					return Reply{}, ErrExited
+					return Reply{}, r.exitedErr()
 				}
 			}
 		}
 	}
+}
+
+// exitedErr 是程序提前結束時的錯誤，帶上 stderr 最後幾行。
+func (r *Runner) exitedErr() error {
+	if tail := strings.TrimSpace(r.stderrTail.String()); tail != "" {
+		return fmt.Errorf("%w: %s", ErrExited, lastLines(tail, 3))
+	}
+	return ErrExited
 }
 
 // reply 把 result 事件組成 Reply；result 沒文字時退回 assistant 文字串接。
