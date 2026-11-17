@@ -72,7 +72,8 @@ func (a *App) handleCommand(content string) bool {
 		if a.Usage == nil {
 			go a.notify("📊 這個 Muninn 沒有接上額度紀錄。")
 		} else {
-			go a.notify(a.Usage.Text())
+			// 資料太舊時 Report 會先開一個 claude 請求更新（最多一分鐘），整段丟到背景
+			go func() { a.notify(a.Usage.Report(context.Background())) }()
 		}
 		return true
 	case "!tasks":

@@ -235,9 +235,35 @@ func TestFullWidthBang(t *testing.T) {
 	}
 }
 
-type fakeUsage struct{}
+type fakeUsage struct{ block chan struct{} }
 
-func (fakeUsage) Text() string { return "📊 七天：已用 32%" }
+func (f fakeUsage) Report(context.Context) string {
+	if f.block != nil {
+		<-f.block // 模擬正在主動更新
+	}
+	return "📊 七天：已用 32%"
+}
+
+func TestUsageCommandDoesNotBlock(t *testing.T) {
+	// 主動更新可能要等上一分鐘，不能卡住訊息處理
+	dir := t.TempDir()
+	snd := &fakeSender{}
+	a := newApp(t, dir, &fakeAsker{}, snd, nil)
+	block := make(chan struct{})
+	a.Usage = fakeUsage{block: block}
+	done := make(chan struct{})
+	go func() {
+		_ = a.OnMessage(context.Background(), msgFrom("m", "!usage"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("!usage 在更新期間卡住了 OnMessage")
+	}
+	close(block)
+	waitFor(t, func() bool { return len(snd.snapshot()) == 1 })
+}
 
 func TestUsageCommand(t *testing.T) {
 	dir := t.TempDir()

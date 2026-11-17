@@ -5,6 +5,7 @@
 package usage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -39,13 +40,82 @@ type snapshot struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// RefreshBinding 是主動更新時記下的來源名稱（不是任何頻道）。
+const RefreshBinding = "usage-refresh"
+
+// Refresher 主動拿一次最新額度（daemon 注入真的 claude 請求，測試注入假的）。
+type Refresher func(ctx context.Context) (Info, error)
+
 // Store 保存最新一筆額度狀態。
 type Store struct {
-	Path string
-	Loc  *time.Location // 顯示重置時間用；nil 用機器時區
+	Path    string
+	Loc     *time.Location // 顯示重置時間用；nil 用機器時區
+	Refresh Refresher      // 選填：資料太舊時 Report 先用它更新；nil 不更新
 
 	mu  sync.Mutex
 	now func() time.Time // 測試用
+
+	fmu      sync.Mutex
+	inflight *flight // 進行中的更新；同時多個 !usage 共用這一次
+}
+
+// MaxAge 是資料多舊之後 Report 會先更新。
+const MaxAge = 30 * time.Minute
+
+type flight struct {
+	done chan struct{}
+	err  error
+}
+
+// Report 產生 !usage 的回覆：資料超過 MaxAge 或還沒有資料時先更新一次。
+// 更新失敗就照舊顯示舊資料，最後附一行原因。
+func (s *Store) Report(ctx context.Context) string {
+	if s.Refresh == nil {
+		return s.Text()
+	}
+	if snap, ok := s.load(); ok && s.clock().Sub(snap.UpdatedAt) < MaxAge {
+		return s.Text()
+	}
+	if err := s.refresh(ctx); err != nil {
+		return s.Text() + "\n更新失敗：" + err.Error()
+	}
+	return s.Text()
+}
+
+// refresh 跑一次 Refresh 並寫進紀錄；已經有一次在跑就等它的結果，不重跑。
+func (s *Store) refresh(ctx context.Context) error {
+	s.fmu.Lock()
+	f := s.inflight
+	if f == nil {
+		f = &flight{done: make(chan struct{})}
+		s.inflight = f
+		s.fmu.Unlock()
+		f.err = s.refreshOnce(ctx)
+		s.fmu.Lock()
+		s.inflight = nil
+		s.fmu.Unlock()
+		close(f.done)
+		return f.err
+	}
+	s.fmu.Unlock()
+	select {
+	case <-f.done:
+		return f.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Store) refreshOnce(ctx context.Context) error {
+	info, err := s.Refresh(ctx)
+	if err != nil {
+		return err
+	}
+	if len(info.UnifiedWindows) == 0 {
+		return fmt.Errorf("claude 回傳的額度資料沒有視窗資訊")
+	}
+	s.Update(RefreshBinding, info)
+	return nil
 }
 
 func (s *Store) clock() time.Time {

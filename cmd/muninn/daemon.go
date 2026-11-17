@@ -110,7 +110,8 @@ func cmdRun(cfgPath string) error {
 		tgTold:     map[string]bool{},
 	}
 	d.audit = &audit.Log{Path: filepath.Join(cfg.StateDir, "audit.jsonl")}
-	d.usage = &usage.Store{Path: filepath.Join(cfg.StateDir, "usage.json")}
+	// 資料太舊時 !usage 會用同一個 claude 執行檔開一個極小請求來更新
+	d.usage = &usage.Store{Path: filepath.Join(cfg.StateDir, "usage.json"), Refresh: usage.ClaudeRefresher(cfg.ClaudeBin)}
 	if cfg.Timezone != "" {
 		d.usage.Loc, _ = time.LoadLocation(cfg.Timezone)
 	}
