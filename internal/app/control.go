@@ -29,6 +29,10 @@ const helpText = "**Muninn 指令**（不會交給 claude）\n" +
 // handleCommand 處理 ! 開頭的 Muninn 指令；回傳 true 表示已處理、不進 inbox。
 // 指令立刻執行，不用等 claude 跑完目前這一輪。
 func (a *App) handleCommand(content string) bool {
+	// 中文輸入法打出的是全形驚嘆號「！」，當成 ! 看待
+	if t := strings.TrimSpace(content); strings.HasPrefix(t, "！") {
+		content = "!" + strings.TrimPrefix(t, "！")
+	}
 	cmd := strings.ToLower(strings.TrimSpace(content))
 	if strings.HasPrefix(cmd, "/") && !strings.ContainsAny(cmd, " \n") {
 		// Telegram 習慣用 /status；群組裡會變成 /status@某bot

@@ -216,3 +216,21 @@ func TestSlashCommands(t *testing.T) {
 		t.Fatal("一般句子（含空白）不該被當成指令")
 	}
 }
+
+func TestFullWidthBang(t *testing.T) {
+	dir := t.TempDir()
+	snd := &fakeSender{}
+	a := newApp(t, dir, &fakeAsker{}, snd, nil)
+	a.Ctl = &fakeCtl{}
+	for _, c := range []string{"！help", " ！status "} {
+		_ = a.OnMessage(context.Background(), msgFrom("m", c))
+	}
+	_ = a.OnMessage(context.Background(), msgFrom("m2", "！這句不是指令嗎"))
+	waitFor(t, func() bool { return len(snd.snapshot()) == 2 })
+	if !strings.Contains(snd.snapshot()[0].text+snd.snapshot()[1].text, "Muninn 指令") {
+		t.Fatalf("全形！help 應回指令說明：%+v", snd.snapshot())
+	}
+	if pendingInbox(dir) != 1 {
+		t.Fatal("全形驚嘆號的指令不該進 inbox；不認得的句子照常交給 claude")
+	}
+}
